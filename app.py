@@ -56,6 +56,21 @@ HISTORY_TYPE_OPTIONS = [
 
 HISTORY_TYPE_ENUM = [item["value"] for item in HISTORY_TYPE_OPTIONS]
 
+WORKOUT_TYPE_OPTIONS = [
+    {"value": "walk", "label": "Walk", "aliases": ["walk", "walking", "steps walk"]},
+    {"value": "run", "label": "Run", "aliases": ["run", "running", "jog", "jogging"]},
+    {"value": "cycle", "label": "Cycle", "aliases": ["cycle", "cycling", "bike", "biking"]},
+    {"value": "strength", "label": "Strength", "aliases": ["strength", "weights", "lifting", "gym"]},
+    {"value": "hiit", "label": "HIIT", "aliases": ["hiit", "intervals", "interval training"]},
+    {"value": "yoga", "label": "Yoga", "aliases": ["yoga"]},
+    {"value": "pilates", "label": "Pilates", "aliases": ["pilates", "reformer"]},
+    {"value": "swim", "label": "Swim", "aliases": ["swim", "swimming"]},
+    {"value": "sport", "label": "Sport", "aliases": ["sport", "sports"]},
+    {"value": "other", "label": "Other", "aliases": ["other"]},
+]
+
+WORKOUT_TYPE_ENUM = [item["value"] for item in WORKOUT_TYPE_OPTIONS]
+
 
 _db_lock = threading.Lock()
 _cipher = Fernet(Config.encryption_key.encode("utf-8"))
@@ -842,6 +857,11 @@ def _tool_get_history_type_options(arguments: dict[str, Any], headers: Any) -> d
     return {"HistoryTypes": HISTORY_TYPE_OPTIONS}
 
 
+def _tool_get_workout_type_options(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    _require_principal(headers)
+    return {"WorkoutTypes": WORKOUT_TYPE_OPTIONS}
+
+
 def _tool_get_weight_trend(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
     principal = _require_principal(headers)
     access_token, _account = _refresh_access_for_principal(principal)
@@ -1178,7 +1198,11 @@ TOOLS: dict[str, dict[str, Any]] = {
         "inputSchema": {
             "type": "object",
             "properties": {
-                "workout_type": {"type": "string"},
+                "workout_type": {
+                    "type": "string",
+                    "enum": WORKOUT_TYPE_ENUM,
+                    "description": "Workout type. Use get_workout_type_options for labels and aliases.",
+                },
                 "workout_name": {"type": "string"},
                 "date": {"type": "string", "description": "YYYY-MM-DD. Defaults to today's server date."},
                 "duration_minutes": {"type": "number"},
@@ -1200,7 +1224,11 @@ TOOLS: dict[str, dict[str, Any]] = {
             "properties": {
                 "workout_id": {"type": "string"},
                 "date": {"type": "string", "description": "YYYY-MM-DD. Optional target date if moving the workout."},
-                "workout_type": {"type": "string"},
+                "workout_type": {
+                    "type": "string",
+                    "enum": WORKOUT_TYPE_ENUM,
+                    "description": "Workout type. Use get_workout_type_options for labels and aliases.",
+                },
                 "workout_name": {"type": "string"},
                 "duration_minutes": {"type": "number", "exclusiveMinimum": 0},
                 "calories_burned": {"type": "integer", "minimum": 0},
@@ -1386,6 +1414,15 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
         "handler": _tool_get_history_type_options,
+    },
+    "get_workout_type_options": {
+        "description": "Return the valid workout_type values, labels, and aliases accepted by workout logging and update tools.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        "handler": _tool_get_workout_type_options,
     },
     "get_history": {
         "description": "Return linked Everday history for weight, steps, workouts, day summaries, or meals.",
