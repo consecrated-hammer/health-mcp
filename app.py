@@ -685,6 +685,40 @@ def _tool_log_weight(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
     )
 
 
+def _tool_update_daily_log(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    payload = {"Date": str(arguments.get("date") or _today_iso())}
+    field_map = {
+        "steps": "Steps",
+        "step_kcal_factor_override": "StepKcalFactorOverride",
+        "weight_kg": "WeightKg",
+        "office_mode": "OfficeMode",
+        "water_litres": "WaterLitres",
+        "walking_pad_minutes": "WalkingPadMinutes",
+        "exercise_notes": "ExerciseNotes",
+        "sleep_hours": "SleepHours",
+        "period": "Period",
+        "hunger_before_dinner": "HungerBeforeDinner",
+        "overall_satisfaction": "OverallSatisfaction",
+        "takeaway": "Takeaway",
+        "logged_complete": "LoggedComplete",
+        "adherent_day": "AdherentDay",
+        "notes": "Notes",
+    }
+    for argument_name, payload_name in field_map.items():
+        if argument_name in arguments:
+            payload[payload_name] = arguments.get(argument_name)
+    if len(payload) == 1:
+        raise ValueError("Provide at least one daily log field to update.")
+    return _http_json(
+        "POST",
+        "/api/integrations/health-mcp/daily-log",
+        payload=payload,
+        headers=_authorized_headers(access_token),
+    )
+
+
 def _tool_log_workout(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
     principal = _require_principal(headers)
     access_token, _account = _refresh_access_for_principal(principal)
@@ -897,7 +931,7 @@ def _tool_get_meal_slots(arguments: dict[str, Any], headers: Any) -> dict[str, A
             {
                 "value": "Snack2",
                 "label": "Afternoon snack",
-                "aliases": ["afternoon snack", "snack2", "snack 2"],
+                "aliases": ["afternoon snack", "bridge", "snack2", "snack 2"],
                 "order": 4,
             },
             {
@@ -909,7 +943,7 @@ def _tool_get_meal_slots(arguments: dict[str, Any], headers: Any) -> dict[str, A
             {
                 "value": "Snack3",
                 "label": "Evening snack",
-                "aliases": ["evening snack", "night snack", "snack3", "snack 3"],
+                "aliases": ["evening snack", "dessert", "night snack", "snack3", "snack 3"],
                 "order": 6,
             },
         ]
@@ -1098,6 +1132,32 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
         "handler": _tool_log_weight,
+    },
+    "update_daily_log": {
+        "description": "Update non-meal daily log fields such as water, sleep, work location, period, adherence, or notes for one date.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "YYYY-MM-DD. Defaults to today's server date."},
+                "steps": {"type": "integer", "minimum": 0},
+                "step_kcal_factor_override": {"type": "number", "minimum": 0},
+                "weight_kg": {"type": "number", "minimum": 20, "maximum": 500},
+                "office_mode": {"type": "string"},
+                "water_litres": {"type": "number", "minimum": 0, "maximum": 20},
+                "walking_pad_minutes": {"type": "integer", "minimum": 0, "maximum": 1440},
+                "exercise_notes": {"type": "string"},
+                "sleep_hours": {"type": "number", "minimum": 0, "maximum": 24},
+                "period": {"type": "boolean"},
+                "hunger_before_dinner": {"type": "integer", "minimum": 1, "maximum": 10},
+                "overall_satisfaction": {"type": "integer", "minimum": 1, "maximum": 10},
+                "takeaway": {"type": "boolean"},
+                "logged_complete": {"type": "boolean"},
+                "adherent_day": {"type": "boolean"},
+                "notes": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+        "handler": _tool_update_daily_log,
     },
     "log_workout": {
         "description": "Log a workout into the linked Everday user's health log.",
