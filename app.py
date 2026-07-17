@@ -35,6 +35,28 @@ class Config:
     link_session_ttl_minutes = max(int(os.environ.get("HEALTH_MCP_LINK_SESSION_TTL_MINUTES", "30")), 1)
 
 
+MEAL_SLOT_OPTIONS = [
+    {"value": "Breakfast", "label": "Breakfast", "aliases": ["breakfast"], "order": 1},
+    {"value": "Snack1", "label": "Morning snack", "aliases": ["morning snack", "snack1", "snack 1"], "order": 2},
+    {"value": "Lunch", "label": "Lunch", "aliases": ["lunch"], "order": 3},
+    {"value": "Snack2", "label": "Afternoon snack", "aliases": ["afternoon snack", "bridge", "snack2", "snack 2"], "order": 4},
+    {"value": "Dinner", "label": "Dinner", "aliases": ["dinner"], "order": 5},
+    {"value": "Snack3", "label": "Evening snack", "aliases": ["evening snack", "dessert", "night snack", "snack3", "snack 3"], "order": 6},
+]
+
+MEAL_SLOT_ENUM = [item["value"] for item in MEAL_SLOT_OPTIONS]
+
+HISTORY_TYPE_OPTIONS = [
+    {"value": "weight", "description": "Per-day weight history."},
+    {"value": "steps", "description": "Per-day step history and step calories."},
+    {"value": "workouts", "description": "Workout ledger entries."},
+    {"value": "days", "description": "Per-day calorie and burn summaries with workbook-style daily metadata."},
+    {"value": "meals", "description": "Meal entry history with ids, slot labels, and nutrition metadata."},
+]
+
+HISTORY_TYPE_ENUM = [item["value"] for item in HISTORY_TYPE_OPTIONS]
+
+
 _db_lock = threading.Lock()
 _cipher = Fernet(Config.encryption_key.encode("utf-8"))
 
@@ -801,6 +823,25 @@ def _tool_get_connection_context(arguments: dict[str, Any], headers: Any) -> dic
     return context
 
 
+def _tool_get_daily_log_fields(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    context = _tool_get_connection_context(arguments, headers)
+    return {
+        "DailyLogFields": context.get("DailyLogFields", []),
+        "ReminderTimeZone": context.get("ReminderTimeZone"),
+        "server_date": context.get("server_date"),
+    }
+
+
+def _tool_get_meal_type_options(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    _require_principal(headers)
+    return {"MealSlots": MEAL_SLOT_OPTIONS}
+
+
+def _tool_get_history_type_options(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    _require_principal(headers)
+    return {"HistoryTypes": HISTORY_TYPE_OPTIONS}
+
+
 def _tool_get_weight_trend(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
     principal = _require_principal(headers)
     access_token, _account = _refresh_access_for_principal(principal)
@@ -908,59 +949,12 @@ def _tool_get_history(arguments: dict[str, Any], headers: Any) -> dict[str, Any]
 
 def _tool_get_meal_slots(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
     _require_principal(headers)
-    return {
-        "MealSlots": [
-            {
-                "value": "Breakfast",
-                "label": "Breakfast",
-                "aliases": ["breakfast"],
-                "order": 1,
-            },
-            {
-                "value": "Snack1",
-                "label": "Morning snack",
-                "aliases": ["morning snack", "snack1", "snack 1"],
-                "order": 2,
-            },
-            {
-                "value": "Lunch",
-                "label": "Lunch",
-                "aliases": ["lunch"],
-                "order": 3,
-            },
-            {
-                "value": "Snack2",
-                "label": "Afternoon snack",
-                "aliases": ["afternoon snack", "bridge", "snack2", "snack 2"],
-                "order": 4,
-            },
-            {
-                "value": "Dinner",
-                "label": "Dinner",
-                "aliases": ["dinner"],
-                "order": 5,
-            },
-            {
-                "value": "Snack3",
-                "label": "Evening snack",
-                "aliases": ["evening snack", "dessert", "night snack", "snack3", "snack 3"],
-                "order": 6,
-            },
-        ]
-    }
+    return {"MealSlots": MEAL_SLOT_OPTIONS}
 
 
 def _tool_get_history_types(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
     _require_principal(headers)
-    return {
-        "HistoryTypes": [
-            {"value": "weight", "description": "Per-day weight history."},
-            {"value": "steps", "description": "Per-day step history and step calories."},
-            {"value": "workouts", "description": "Workout ledger entries."},
-            {"value": "days", "description": "Per-day calorie and burn summaries."},
-            {"value": "meals", "description": "Meal entry history with ids and nutrition metadata."},
-        ]
-    }
+    return {"HistoryTypes": HISTORY_TYPE_OPTIONS}
 
 
 def _tool_search_saved_foods(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
@@ -1033,7 +1027,11 @@ TOOLS: dict[str, dict[str, Any]] = {
             "properties": {
                 "text": {"type": "string"},
                 "date": {"type": "string", "description": "YYYY-MM-DD. Defaults to today's server date."},
-                "meal_type": {"type": "string"},
+                "meal_type": {
+                    "type": "string",
+                    "enum": MEAL_SLOT_ENUM,
+                    "description": "Everday meal slot. Use get_meal_slots for labels and aliases such as Bridge -> Snack2 and Dessert -> Snack3.",
+                },
                 "note": {"type": "string"},
             },
             "required": ["text"],
@@ -1048,7 +1046,11 @@ TOOLS: dict[str, dict[str, Any]] = {
             "properties": {
                 "image_base64": {"type": "string"},
                 "date": {"type": "string", "description": "YYYY-MM-DD. Defaults to today's server date."},
-                "meal_type": {"type": "string"},
+                "meal_type": {
+                    "type": "string",
+                    "enum": MEAL_SLOT_ENUM,
+                    "description": "Everday meal slot. Use get_meal_slots for labels and aliases such as Bridge -> Snack2 and Dessert -> Snack3.",
+                },
                 "note": {"type": "string"},
             },
             "required": ["image_base64"],
@@ -1073,7 +1075,11 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "serving_quantity": {"type": "number", "exclusiveMinimum": 0},
                 "serving_unit": {"type": "string"},
                 "date": {"type": "string", "description": "YYYY-MM-DD. Defaults to today's server date."},
-                "meal_type": {"type": "string"},
+                "meal_type": {
+                    "type": "string",
+                    "enum": MEAL_SLOT_ENUM,
+                    "description": "Everday meal slot. Use get_meal_slots for labels and aliases such as Bridge -> Snack2 and Dessert -> Snack3.",
+                },
                 "note": {"type": "string"},
             },
             "required": ["food_name", "calories"],
@@ -1088,7 +1094,11 @@ TOOLS: dict[str, dict[str, Any]] = {
             "properties": {
                 "meal_entry_id": {"type": "string"},
                 "date": {"type": "string", "description": "YYYY-MM-DD. Optional target date if moving the meal."},
-                "meal_type": {"type": "string"},
+                "meal_type": {
+                    "type": "string",
+                    "enum": MEAL_SLOT_ENUM,
+                    "description": "Everday meal slot. Use get_meal_slots for labels and aliases such as Bridge -> Snack2 and Dessert -> Snack3.",
+                },
                 "note": {"type": "string"},
                 "quantity": {"type": "number", "exclusiveMinimum": 0},
                 "food_name": {"type": "string"},
@@ -1142,17 +1152,21 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "steps": {"type": "integer", "minimum": 0},
                 "step_kcal_factor_override": {"type": "number", "minimum": 0},
                 "weight_kg": {"type": "number", "minimum": 20, "maximum": 500},
-                "office_mode": {"type": "string"},
+                "office_mode": {
+                    "type": "string",
+                    "enum": ["office", "wfh", "other"],
+                    "description": "Work location for the day. Use exactly one of: office, wfh, other.",
+                },
                 "water_litres": {"type": "number", "minimum": 0, "maximum": 20},
                 "walking_pad_minutes": {"type": "integer", "minimum": 0, "maximum": 1440},
                 "exercise_notes": {"type": "string"},
                 "sleep_hours": {"type": "number", "minimum": 0, "maximum": 24},
-                "period": {"type": "boolean"},
+                "period": {"type": "boolean", "description": "Set true if this is a period day, false otherwise."},
                 "hunger_before_dinner": {"type": "integer", "minimum": 1, "maximum": 10},
                 "overall_satisfaction": {"type": "integer", "minimum": 1, "maximum": 10},
-                "takeaway": {"type": "boolean"},
-                "logged_complete": {"type": "boolean"},
-                "adherent_day": {"type": "boolean"},
+                "takeaway": {"type": "boolean", "description": "Set true if takeaway was eaten that day, false otherwise."},
+                "logged_complete": {"type": "boolean", "description": "Set true when daily logging is complete, false otherwise."},
+                "adherent_day": {"type": "boolean", "description": "Set true when the day counts as adherent, false otherwise."},
                 "notes": {"type": "string"},
             },
             "additionalProperties": False,
@@ -1242,6 +1256,24 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
         "handler": _tool_get_connection_context,
+    },
+    "get_meal_type_options": {
+        "description": "Return the valid meal_type values, labels, and aliases accepted by meal logging and meal update tools.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        "handler": _tool_get_meal_type_options,
+    },
+    "get_daily_log_fields": {
+        "description": "Return the valid daily log fields, allowed values, and input constraints for update_daily_log.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        "handler": _tool_get_daily_log_fields,
     },
     "get_weight_trend": {
         "description": "Return recent weight trend data for the linked Everday user.",
@@ -1346,12 +1378,25 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
         "handler": _tool_get_history_types,
     },
+    "get_history_type_options": {
+        "description": "Return the valid history_type values and their meanings accepted by get_history.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        "handler": _tool_get_history_type_options,
+    },
     "get_history": {
         "description": "Return linked Everday history for weight, steps, workouts, day summaries, or meals.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "history_type": {"type": "string", "enum": ["weight", "steps", "workouts", "days", "meals"]},
+                "history_type": {
+                    "type": "string",
+                    "enum": HISTORY_TYPE_ENUM,
+                    "description": "Use one of the documented history types. Call get_history_type_options if unsure.",
+                },
                 "start_date": {"type": "string"},
                 "end_date": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 500},
