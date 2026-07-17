@@ -21,10 +21,24 @@ def _require_env(name: str) -> str:
     return value
 
 
+def _build_version() -> str:
+    version_file = os.environ.get("HEALTH_MCP_VERSION_FILE", "/app/version.txt").strip() or "/app/version.txt"
+    try:
+        with open(version_file, "r", encoding="utf-8") as handle:
+            value = handle.read().strip()
+            if value:
+                return value
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+    return os.environ.get("HEALTH_MCP_VERSION", "dev").strip() or "dev"
+
+
 class Config:
     host = os.environ.get("HEALTH_MCP_HOST", "0.0.0.0").strip() or "0.0.0.0"
     port = int(os.environ.get("HEALTH_MCP_PORT", "8766"))
-    version = os.environ.get("HEALTH_MCP_VERSION", "2026-07-16.1").strip() or "2026-07-16.1"
+    version = _build_version()
     provider = os.environ.get("HEALTH_MCP_PROVIDER", "authelia").strip() or "authelia"
     public_base_url = os.environ.get("HEALTH_MCP_PUBLIC_BASE_URL", "").strip().rstrip("/")
     everday_base_url = _require_env("HEALTH_MCP_EVERDAY_BASE_URL").rstrip("/")
@@ -70,6 +84,24 @@ WORKOUT_TYPE_OPTIONS = [
 ]
 
 WORKOUT_TYPE_ENUM = [item["value"] for item in WORKOUT_TYPE_OPTIONS]
+
+INSIGHT_TYPE_OPTIONS = [
+    {"value": "context_comparison", "label": "Context comparison", "description": "Comparison between contexts such as office vs WFH."},
+    {"value": "relationship_test", "label": "Relationship test", "description": "Observed relationship or correlation test between two metrics."},
+    {"value": "meal_pattern", "label": "Meal pattern", "description": "Observed meal, recipe, or satiety pattern."},
+    {"value": "weekly_pattern", "label": "Weekly pattern", "description": "Insight spanning a weekly period."},
+    {"value": "custom", "label": "Custom", "description": "A user-defined or workbook-specific insight type."},
+]
+
+INSIGHT_PERIOD_OPTIONS = [
+    {"value": "day", "label": "Day"},
+    {"value": "week", "label": "Week"},
+    {"value": "month", "label": "Month"},
+    {"value": "custom", "label": "Custom"},
+]
+
+INSIGHT_PERIOD_ENUM = [item["value"] for item in INSIGHT_PERIOD_OPTIONS]
+INSIGHT_STATUS_ENUM = ["active", "superseded", "archived"]
 
 
 _db_lock = threading.Lock()
@@ -736,12 +768,17 @@ def _tool_update_daily_log(arguments: dict[str, Any], headers: Any) -> dict[str,
         "exercise_notes": "ExerciseNotes",
         "sleep_hours": "SleepHours",
         "period": "Period",
+        "period_label": "PeriodLabel",
         "hunger_before_dinner": "HungerBeforeDinner",
         "overall_satisfaction": "OverallSatisfaction",
         "takeaway": "Takeaway",
         "logged_complete": "LoggedComplete",
         "adherent_day": "AdherentDay",
+        "adherent_status": "AdherentStatus",
         "notes": "Notes",
+        "daily_calorie_target_snapshot": "DailyCalorieTargetSnapshot",
+        "protein_target_snapshot": "ProteinTargetSnapshot",
+        "step_target_snapshot": "StepTargetSnapshot",
     }
     for argument_name, payload_name in field_map.items():
         if argument_name in arguments:
@@ -999,6 +1036,245 @@ def _tool_get_saved_foods(arguments: dict[str, Any], headers: Any) -> dict[str, 
     return _http_json("GET", path, headers=_authorized_headers(access_token))
 
 
+def _tool_upsert_recipe_review(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    recipe_name = str(arguments.get("recipe_name") or "").strip()
+    log_date = str(arguments.get("log_date") or "").strip()
+    recipe_review_id = str(arguments.get("recipe_review_id") or "").strip()
+    if not recipe_review_id and (not recipe_name or not log_date):
+        raise ValueError("recipe_name and log_date are required when recipe_review_id is not provided.")
+    payload = {
+        "RecipeReviewId": recipe_review_id or None,
+        "RecipeName": recipe_name or None,
+        "LogDate": log_date or None,
+        "MealEntryId": arguments.get("meal_entry_id"),
+        "Rating": arguments.get("rating"),
+        "WouldMakeAgain": arguments.get("would_make_again"),
+        "HallOfFameOverride": arguments.get("hall_of_fame_override"),
+        "Notes": arguments.get("notes"),
+    }
+    return _http_json(
+        "POST",
+        "/api/integrations/health-mcp/recipe-reviews",
+        payload=payload,
+        headers=_authorized_headers(access_token),
+    )
+
+
+def _tool_get_recipe_reviews(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    params = {"limit": int(arguments.get("limit") or 200)}
+    path = f"/api/integrations/health-mcp/recipe-reviews?{urllib.parse.urlencode(params)}"
+    return _http_json("GET", path, headers=_authorized_headers(access_token))
+
+
+def _tool_get_recipe_stats(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    params = {"limit": int(arguments.get("limit") or 100)}
+    if arguments.get("start_date"):
+        params["start_date"] = str(arguments.get("start_date"))
+    if arguments.get("end_date"):
+        params["end_date"] = str(arguments.get("end_date"))
+    path = f"/api/integrations/health-mcp/recipe-stats?{urllib.parse.urlencode(params)}"
+    return _http_json("GET", path, headers=_authorized_headers(access_token))
+
+
+def _tool_upsert_product_review(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    product_name = str(arguments.get("product_name") or "").strip()
+    if not product_name:
+        raise ValueError("product_name is required.")
+    payload = {
+        "FoodId": arguments.get("food_id"),
+        "ProductName": product_name,
+        "Brand": arguments.get("brand"),
+        "Category": arguments.get("category"),
+        "BuyAgain": arguments.get("buy_again"),
+        "Rating": arguments.get("rating"),
+        "CaloriesPerServing": arguments.get("calories_per_serving"),
+        "ProteinPerServing": arguments.get("protein_per_serving"),
+        "Notes": arguments.get("notes"),
+    }
+    return _http_json(
+        "POST",
+        "/api/integrations/health-mcp/product-reviews",
+        payload=payload,
+        headers=_authorized_headers(access_token),
+    )
+
+
+def _tool_get_product_reviews(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    params = {"limit": int(arguments.get("limit") or 200)}
+    path = f"/api/integrations/health-mcp/product-reviews?{urllib.parse.urlencode(params)}"
+    return _http_json("GET", path, headers=_authorized_headers(access_token))
+
+
+def _tool_upsert_experiment(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    start_date = str(arguments.get("start_date") or "").strip()
+    variable_changed = str(arguments.get("variable_changed") or "").strip()
+    if not start_date or not variable_changed:
+        raise ValueError("start_date and variable_changed are required.")
+    payload = {
+        "ExperimentId": arguments.get("experiment_id"),
+        "StartDate": start_date,
+        "EndDate": arguments.get("end_date"),
+        "VariableChanged": variable_changed,
+        "Reason": arguments.get("reason"),
+        "ExpectedOutcome": arguments.get("expected_outcome"),
+        "ActualOutcome": arguments.get("actual_outcome"),
+        "Decision": arguments.get("decision"),
+        "Status": arguments.get("status") or "In progress",
+    }
+    return _http_json(
+        "POST",
+        "/api/integrations/health-mcp/experiments",
+        payload=payload,
+        headers=_authorized_headers(access_token),
+    )
+
+
+def _tool_get_experiments(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    params = {"limit": int(arguments.get("limit") or 200)}
+    path = f"/api/integrations/health-mcp/experiments?{urllib.parse.urlencode(params)}"
+    return _http_json("GET", path, headers=_authorized_headers(access_token))
+
+
+def _tool_upsert_measurement(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    log_date = str(arguments.get("log_date") or "").strip()
+    if not log_date:
+        raise ValueError("log_date is required.")
+    payload = {
+        "LogDate": log_date,
+        "WaistCm": arguments.get("waist_cm"),
+        "HipsCm": arguments.get("hips_cm"),
+        "RestingHeartRate": arguments.get("resting_heart_rate"),
+        "PeriodCycleNotes": arguments.get("period_cycle_notes"),
+        "Notes": arguments.get("notes"),
+    }
+    return _http_json(
+        "POST",
+        "/api/integrations/health-mcp/measurements",
+        payload=payload,
+        headers=_authorized_headers(access_token),
+    )
+
+
+def _tool_get_measurements(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    params = {"limit": int(arguments.get("limit") or 200)}
+    if arguments.get("start_date"):
+        params["start_date"] = str(arguments.get("start_date"))
+    if arguments.get("end_date"):
+        params["end_date"] = str(arguments.get("end_date"))
+    path = f"/api/integrations/health-mcp/measurements?{urllib.parse.urlencode(params)}"
+    return _http_json("GET", path, headers=_authorized_headers(access_token))
+
+
+def _tool_upsert_weekly_review_note(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    week_start = str(arguments.get("week_start") or "").strip()
+    if not week_start:
+        raise ValueError("week_start is required.")
+    payload = {
+        "WeekStart": week_start,
+        "BiggestNutritionWin": arguments.get("biggest_nutrition_win"),
+        "ImprovementForNextWeek": arguments.get("improvement_for_next_week"),
+    }
+    return _http_json(
+        "POST",
+        "/api/integrations/health-mcp/weekly-review-note",
+        payload=payload,
+        headers=_authorized_headers(access_token),
+    )
+
+
+def _tool_get_weekly_review_note(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    week_start = str(arguments.get("week_start") or "").strip()
+    if not week_start:
+        raise ValueError("week_start is required.")
+    path = f"/api/integrations/health-mcp/weekly-review-note?{urllib.parse.urlencode({'week_start': week_start})}"
+    return _http_json("GET", path, headers=_authorized_headers(access_token))
+
+
+def _tool_get_weekly_review(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    week_start = str(arguments.get("week_start") or "").strip()
+    if not week_start:
+        raise ValueError("week_start is required.")
+    path = f"/api/integrations/health-mcp/weekly-review?{urllib.parse.urlencode({'week_start': week_start})}"
+    return _http_json("GET", path, headers=_authorized_headers(access_token))
+
+
+def _tool_get_insight_type_options(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    _require_principal(headers)
+    return {
+        "InsightTypes": INSIGHT_TYPE_OPTIONS,
+        "PeriodTypes": INSIGHT_PERIOD_OPTIONS,
+        "StatusValues": INSIGHT_STATUS_ENUM,
+    }
+
+
+def _tool_upsert_insight(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    insight_type = str(arguments.get("insight_type") or "").strip()
+    period_type = str(arguments.get("period_type") or "").strip()
+    period_start = str(arguments.get("period_start") or "").strip()
+    title = str(arguments.get("title") or "").strip()
+    if not insight_type or not period_type or not period_start or not title:
+        raise ValueError("insight_type, period_type, period_start, and title are required.")
+    payload = {
+        "InsightId": arguments.get("insight_id"),
+        "InsightType": insight_type,
+        "PeriodType": period_type,
+        "PeriodStart": period_start,
+        "PeriodEnd": arguments.get("period_end"),
+        "Title": title,
+        "Summary": arguments.get("summary"),
+        "Confidence": arguments.get("confidence"),
+        "Status": arguments.get("status") or "active",
+        "Source": arguments.get("source") or "manual",
+        "SchemaVersion": int(arguments.get("schema_version") or 1),
+        "Payload": arguments.get("payload"),
+        "Tags": arguments.get("tags") or [],
+    }
+    return _http_json(
+        "POST",
+        "/api/integrations/health-mcp/insights",
+        payload=payload,
+        headers=_authorized_headers(access_token),
+    )
+
+
+def _tool_get_insights(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    params: dict[str, Any] = {"limit": int(arguments.get("limit") or 200)}
+    for key in ("insight_type", "period_type", "start_date", "end_date", "status", "source", "tag"):
+        value = arguments.get(key)
+        if value is not None and str(value).strip():
+            params[key] = str(value).strip()
+    path = f"/api/integrations/health-mcp/insights?{urllib.parse.urlencode(params)}"
+    return _http_json("GET", path, headers=_authorized_headers(access_token))
+
+
 TOOLS: dict[str, dict[str, Any]] = {
     "start_account_link": {
         "description": "Create a one-time browser link so the current MCP identity can sign into Everday without sending credentials through chat.",
@@ -1182,12 +1458,24 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "exercise_notes": {"type": "string"},
                 "sleep_hours": {"type": "number", "minimum": 0, "maximum": 24},
                 "period": {"type": "boolean", "description": "Set true if this is a period day, false otherwise."},
+                "period_label": {
+                    "type": "string",
+                    "description": "Exact period status label, for example 'No', 'Day 1', or 'Day 2'. Prefer this when preserving workbook-style history.",
+                },
                 "hunger_before_dinner": {"type": "integer", "minimum": 1, "maximum": 10},
                 "overall_satisfaction": {"type": "integer", "minimum": 1, "maximum": 10},
                 "takeaway": {"type": "boolean", "description": "Set true if takeaway was eaten that day, false otherwise."},
                 "logged_complete": {"type": "boolean", "description": "Set true when daily logging is complete, false otherwise."},
                 "adherent_day": {"type": "boolean", "description": "Set true when the day counts as adherent, false otherwise."},
+                "adherent_status": {
+                    "type": "string",
+                    "enum": ["yes", "no", "pending"],
+                    "description": "Exact adherence status. Prefer this over adherent_day when preserving workbook-style history.",
+                },
                 "notes": {"type": "string"},
+                "daily_calorie_target_snapshot": {"type": "integer", "minimum": 0},
+                "protein_target_snapshot": {"type": "number", "minimum": 0},
+                "step_target_snapshot": {"type": "integer", "minimum": 0},
             },
             "additionalProperties": False,
         },
@@ -1466,6 +1754,240 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
         "handler": _tool_get_saved_foods,
+    },
+    "upsert_recipe_review": {
+        "description": "Create or update a structured recipe review for one recipe/date, including rating, would-make-again, Hall of Fame override, and notes.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "recipe_review_id": {"type": "string", "description": "Optional existing RecipeReviewId to update."},
+                "recipe_name": {"type": "string"},
+                "log_date": {"type": "string", "description": "YYYY-MM-DD."},
+                "meal_entry_id": {"type": "string"},
+                "rating": {"type": "number", "minimum": 0, "maximum": 10},
+                "would_make_again": {"type": "string", "enum": ["yes", "no", "maybe"]},
+                "hall_of_fame_override": {"type": "string", "enum": ["yes", "no"]},
+                "notes": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+        "handler": _tool_upsert_recipe_review,
+    },
+    "get_recipe_reviews": {
+        "description": "List stored recipe reviews for the linked Everday user.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+            },
+            "additionalProperties": False,
+        },
+        "handler": _tool_get_recipe_reviews,
+    },
+    "get_recipe_stats": {
+        "description": "Return derived recipe statistics such as times eaten, average rating, average calories, average protein, and Hall of Fame state.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "start_date": {"type": "string", "description": "YYYY-MM-DD, optional."},
+                "end_date": {"type": "string", "description": "YYYY-MM-DD, optional."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+            },
+            "additionalProperties": False,
+        },
+        "handler": _tool_get_recipe_stats,
+    },
+    "upsert_product_review": {
+        "description": "Create or update a structured product review including brand, category, buy-again decision, rating, and notes.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "food_id": {"type": "string"},
+                "product_name": {"type": "string"},
+                "brand": {"type": "string"},
+                "category": {"type": "string"},
+                "buy_again": {"type": "string", "enum": ["yes", "no", "maybe"]},
+                "rating": {"type": "number", "minimum": 0, "maximum": 10},
+                "calories_per_serving": {"type": "integer", "minimum": 0},
+                "protein_per_serving": {"type": "number", "minimum": 0},
+                "notes": {"type": "string"},
+            },
+            "required": ["product_name"],
+            "additionalProperties": False,
+        },
+        "handler": _tool_upsert_product_review,
+    },
+    "get_product_reviews": {
+        "description": "List stored product reviews for the linked Everday user.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+            },
+            "additionalProperties": False,
+        },
+        "handler": _tool_get_product_reviews,
+    },
+    "upsert_experiment": {
+        "description": "Create or update an experiment record with variable, expected outcome, actual outcome, decision, and status.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "experiment_id": {"type": "string"},
+                "start_date": {"type": "string", "description": "YYYY-MM-DD."},
+                "end_date": {"type": "string", "description": "YYYY-MM-DD, optional."},
+                "variable_changed": {"type": "string"},
+                "reason": {"type": "string"},
+                "expected_outcome": {"type": "string"},
+                "actual_outcome": {"type": "string"},
+                "decision": {"type": "string", "enum": ["yes", "no", "maybe", "pending", "adopt", "reject", "inconclusive", "keep testing"]},
+                "status": {"type": "string"},
+            },
+            "required": ["start_date", "variable_changed"],
+            "additionalProperties": False,
+        },
+        "handler": _tool_upsert_experiment,
+    },
+    "get_experiments": {
+        "description": "List stored experiments for the linked Everday user.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+            },
+            "additionalProperties": False,
+        },
+        "handler": _tool_get_experiments,
+    },
+    "upsert_measurement": {
+        "description": "Create or update a dated body measurement snapshot including waist, hips, resting heart rate, and cycle notes.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "log_date": {"type": "string", "description": "YYYY-MM-DD."},
+                "waist_cm": {"type": "number", "minimum": 0, "maximum": 500},
+                "hips_cm": {"type": "number", "minimum": 0, "maximum": 500},
+                "resting_heart_rate": {"type": "integer", "minimum": 0, "maximum": 300},
+                "period_cycle_notes": {"type": "string"},
+                "notes": {"type": "string"},
+            },
+            "required": ["log_date"],
+            "additionalProperties": False,
+        },
+        "handler": _tool_upsert_measurement,
+    },
+    "get_measurements": {
+        "description": "List stored body measurements for the linked Everday user, optionally within a date range.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "start_date": {"type": "string", "description": "YYYY-MM-DD, optional."},
+                "end_date": {"type": "string", "description": "YYYY-MM-DD, optional."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+            },
+            "additionalProperties": False,
+        },
+        "handler": _tool_get_measurements,
+    },
+    "upsert_weekly_review_note": {
+        "description": "Create or update the authored note fields for one weekly review period.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "week_start": {"type": "string", "description": "YYYY-MM-DD Monday date."},
+                "biggest_nutrition_win": {"type": "string"},
+                "improvement_for_next_week": {"type": "string"},
+            },
+            "required": ["week_start"],
+            "additionalProperties": False,
+        },
+        "handler": _tool_upsert_weekly_review_note,
+    },
+    "get_weekly_review_note": {
+        "description": "Return the stored authored note fields for one weekly review period.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "week_start": {"type": "string", "description": "YYYY-MM-DD Monday date."},
+            },
+            "required": ["week_start"],
+            "additionalProperties": False,
+        },
+        "handler": _tool_get_weekly_review_note,
+    },
+    "get_weekly_review": {
+        "description": "Return a derived weekly review snapshot with averages, adherence, best/worst meals, and attached authored weekly notes.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "week_start": {"type": "string", "description": "YYYY-MM-DD Monday date."},
+            },
+            "required": ["week_start"],
+            "additionalProperties": False,
+        },
+        "handler": _tool_get_weekly_review,
+    },
+    "get_insight_type_options": {
+        "description": "Return recommended insight_type values plus the valid period_type and status values for flexible insights.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        "handler": _tool_get_insight_type_options,
+    },
+    "upsert_insight": {
+        "description": "Create or update a flexible insight record with a stable envelope and arbitrary JSON payload.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "insight_id": {"type": "string", "description": "Optional existing InsightId to update."},
+                "insight_type": {
+                    "type": "string",
+                    "description": "Flexible insight category such as context_comparison, relationship_test, meal_pattern, weekly_pattern, or a future custom type. Use get_insight_type_options for recommended values.",
+                },
+                "period_type": {"type": "string", "enum": INSIGHT_PERIOD_ENUM},
+                "period_start": {"type": "string", "description": "YYYY-MM-DD."},
+                "period_end": {"type": "string", "description": "YYYY-MM-DD, optional."},
+                "title": {"type": "string"},
+                "summary": {"type": "string"},
+                "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+                "status": {"type": "string", "enum": INSIGHT_STATUS_ENUM},
+                "source": {"type": "string", "description": "For example workbook, derived, agent, or manual."},
+                "schema_version": {"type": "integer", "minimum": 1, "maximum": 1000},
+                "payload": {
+                    "type": "object",
+                    "description": "Flexible JSON object for workbook-specific fields, metrics, evidence, or narratives.",
+                    "additionalProperties": True,
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional freeform tags for filtering later.",
+                },
+            },
+            "required": ["insight_type", "period_type", "period_start", "title"],
+            "additionalProperties": False,
+        },
+        "handler": _tool_upsert_insight,
+    },
+    "get_insights": {
+        "description": "List stored insight records with optional filters by type, period, date range, status, source, or tag.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "insight_type": {"type": "string"},
+                "period_type": {"type": "string", "enum": INSIGHT_PERIOD_ENUM},
+                "start_date": {"type": "string", "description": "YYYY-MM-DD, optional."},
+                "end_date": {"type": "string", "description": "YYYY-MM-DD, optional."},
+                "status": {"type": "string", "enum": INSIGHT_STATUS_ENUM},
+                "source": {"type": "string"},
+                "tag": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+            },
+            "additionalProperties": False,
+        },
+        "handler": _tool_get_insights,
     },
 }
 
