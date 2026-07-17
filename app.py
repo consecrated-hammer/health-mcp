@@ -103,6 +103,55 @@ INSIGHT_PERIOD_OPTIONS = [
 INSIGHT_PERIOD_ENUM = [item["value"] for item in INSIGHT_PERIOD_OPTIONS]
 INSIGHT_STATUS_ENUM = ["active", "superseded", "archived"]
 
+READ_ONLY_TOOLS = {
+    "connection_status",
+    "get_connection_context",
+    "get_daily_log_fields",
+    "get_experiments",
+    "get_goals",
+    "get_history",
+    "get_history_type_options",
+    "get_history_types",
+    "get_insight_type_options",
+    "get_insights",
+    "get_meal",
+    "get_meal_slots",
+    "get_meal_type_options",
+    "get_measurements",
+    "get_product_reviews",
+    "get_recipe_reviews",
+    "get_recipe_stats",
+    "get_saved_foods",
+    "get_step_summary",
+    "get_targets_history",
+    "get_today_meals",
+    "get_today_summary",
+    "get_weight_trend",
+    "get_weekly_review",
+    "get_weekly_review_note",
+    "get_workout_type_options",
+    "search_meals",
+    "search_saved_foods",
+}
+
+DESTRUCTIVE_TOOLS = {
+    "delete_meal",
+    "delete_workout",
+    "disconnect_account",
+}
+
+IDEMPOTENT_WRITE_TOOLS = {
+    "update_daily_log",
+    "update_meal",
+    "update_workout",
+    "upsert_experiment",
+    "upsert_insight",
+    "upsert_measurement",
+    "upsert_product_review",
+    "upsert_recipe_review",
+    "upsert_weekly_review_note",
+}
+
 
 _db_lock = threading.Lock()
 _cipher = Fernet(Config.encryption_key.encode("utf-8"))
@@ -1275,6 +1324,27 @@ def _tool_get_insights(arguments: dict[str, Any], headers: Any) -> dict[str, Any
     return _http_json("GET", path, headers=_authorized_headers(access_token))
 
 
+def _tool_title(name: str) -> str:
+    words = name.split("_")
+    return " ".join(word.capitalize() for word in words)
+
+
+def _tool_annotations(name: str) -> dict[str, Any]:
+    read_only = name in READ_ONLY_TOOLS or name.startswith("get_") or name.startswith("search_")
+    destructive = name in DESTRUCTIVE_TOOLS
+    annotations = {
+        "title": _tool_title(name),
+        "readOnlyHint": read_only,
+        "destructiveHint": destructive,
+        "openWorldHint": False,
+    }
+    if read_only:
+        annotations["idempotentHint"] = True
+    elif name in IDEMPOTENT_WRITE_TOOLS:
+        annotations["idempotentHint"] = True
+    return annotations
+
+
 TOOLS: dict[str, dict[str, Any]] = {
     "start_account_link": {
         "description": "Create a one-time browser link so the current MCP identity can sign into Everday without sending credentials through chat.",
@@ -2174,6 +2244,7 @@ def _handle_jsonrpc(payload: dict[str, Any], headers: Any) -> dict[str, Any] | N
                     "name": name,
                     "description": spec["description"],
                     "inputSchema": spec["inputSchema"],
+                    "annotations": spec.get("annotations") or _tool_annotations(name),
                 }
             )
         return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": tools}}
