@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -143,6 +144,7 @@ DESTRUCTIVE_TOOLS = {
 IDEMPOTENT_WRITE_TOOLS = {
     "update_daily_log",
     "update_meal",
+    "update_targets",
     "update_workout",
     "upsert_experiment",
     "upsert_insight",
@@ -151,6 +153,17 @@ IDEMPOTENT_WRITE_TOOLS = {
     "upsert_recipe_review",
     "upsert_weekly_review_note",
 }
+
+TASK_AWARENESS_UPCOMING_MINUTES = 120
+TASK_AWARENESS_WEIGHT_DAYS = 8
+RESTING_HEART_RATE_ALERT_THRESHOLD = 100
+RESTING_HEART_RATE_ALERT_MAX_AGE_DAYS = 3
+WEEKLY_REVIEW_SUNDAY_START_HOUR = 18
+WEEKLY_REVIEW_MONDAY_END_HOUR = 12
+PERIOD_CYCLE_MIN_DAYS = 20
+PERIOD_CYCLE_MAX_DAYS = 45
+PERIOD_REMINDER_DAYS_BEFORE = 3
+PERIOD_REMINDER_DAYS_AFTER = 4
 
 
 _db_lock = threading.Lock()
@@ -219,6 +232,16 @@ def _init_db() -> None:
             ON account_link_sessions (external_subject, status)
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS delivered_agent_alerts (
+                external_subject TEXT NOT NULL,
+                alert_key TEXT NOT NULL,
+                delivered_at TEXT NOT NULL,
+                PRIMARY KEY (external_subject, alert_key)
+            )
+            """
+        )
         conn.commit()
 
 
@@ -226,6 +249,19 @@ def _db_connect() -> sqlite3.Connection:
     conn = sqlite3.connect(Config.state_db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _claim_agent_alert(external_subject: str, alert_key: str) -> bool:
+    with _db_lock, _db_connect() as conn:
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO delivered_agent_alerts (external_subject, alert_key, delivered_at)
+            VALUES (?, ?, ?)
+            """,
+            (external_subject, alert_key, _utc_now().isoformat()),
+        )
+        conn.commit()
+    return cursor.rowcount == 1
 
 
 def _encrypt(value: str) -> str:
@@ -521,6 +557,422 @@ def _everday_refresh(refresh_token: str) -> dict[str, Any]:
 
 def _authorized_headers(access_token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {access_token}"}
+
+
+def _task_timezone(value: Any, fallback: str) -> ZoneInfo:
+    for candidate in (value, fallback, "UTC"):
+        try:
+            return ZoneInfo(str(candidate))
+        except (TypeError, ValueError, ZoneInfoNotFoundError):
+            continue
+    return ZoneInfo("UTC")
+
+
+def _task_applies_on_date(task: dict[str, Any], local_date: date) -> bool:
+    try:
+        start_date = date.fromisoformat(str(task.get("StartDate") or ""))
+    except ValueError:
+        return False
+    if local_date < start_date:
+        return False
+    repeat_until = task.get("RepeatUntilDate")
+    if repeat_until:
+        try:
+            if local_date > date.fromisoformat(str(repeat_until)):
+                return False
+        except ValueError:
+            return False
+    if str(task.get("RepeatType") or "none").lower() != "weekly":
+        return local_date == start_date or local_date > start_date
+    weekdays = [int(day) for day in (task.get("RepeatWeekdays") or []) if str(day).isdigit()]
+    if not weekdays or local_date.weekday() not in weekdays:
+        return False
+    interval = max(1, int(task.get("RepeatInterval") or 1))
+    week_offset = (local_date - start_date).days // 7
+    return week_offset % interval == 0
+
+
+def _task_occurrence_datetime(task: dict[str, Any], local_date: date, fallback_timezone: str) -> datetime | None:
+    start_time = str(task.get("StartTime") or "").strip()
+    if not start_time:
+        return None
+    try:
+        parsed_time = datetime.strptime(start_time, "%H:%M").time()
+    except ValueError:
+        return None
+    return datetime.combine(local_date, parsed_time, tzinfo=_task_timezone(task.get("TimeZone"), fallback_timezone))
+
+
+def _health_task_items(tasks: list[dict[str, Any]], user_id: int, reminder_timezone: str, now_utc: datetime) -> dict[str, Any]:
+    overdue: list[dict[str, Any]] = []
+    upcoming: list[dict[str, Any]] = []
+    for task in tasks:
+        if task.get("IsCompleted") or int(task.get("OwnerUserId") or 0) != user_id:
+            continue
+        related_module = str(task.get("RelatedModule") or "").lower()
+        list_name = str(task.get("ListName") or "").lower()
+        if related_module != "health" and list_name != "health":
+            continue
+        task_timezone = _task_timezone(task.get("TimeZone"), reminder_timezone)
+        local_now = now_utc.astimezone(task_timezone)
+        local_date = local_now.date()
+        if not _task_applies_on_date(task, local_date):
+            continue
+        due_at = _task_occurrence_datetime(task, local_date, reminder_timezone)
+        if due_at is None:
+            continue
+        item = {
+            "Id": task.get("Id"),
+            "Title": task.get("Title"),
+            "DueAt": due_at.isoformat(),
+            "DueTime": due_at.strftime("%H:%M"),
+            "TimeZone": str(task_timezone),
+        }
+        if due_at <= local_now:
+            overdue.append(item)
+        elif due_at <= local_now + timedelta(minutes=TASK_AWARENESS_UPCOMING_MINUTES):
+            upcoming.append(item)
+    overdue.sort(key=lambda item: str(item["DueAt"]))
+    upcoming.sort(key=lambda item: str(item["DueAt"]))
+    notices = []
+    if overdue:
+        notices.append("Overdue health tasks: " + "; ".join(f"{item['Title']} (due {item['DueTime']})" for item in overdue))
+    if upcoming:
+        notices.append(
+            f"Upcoming health tasks in the next {TASK_AWARENESS_UPCOMING_MINUTES // 60} hours: "
+            + "; ".join(f"{item['Title']} (due {item['DueTime']})" for item in upcoming)
+        )
+    return {"Overdue": overdue, "Upcoming": upcoming, "AgentNotice": ". ".join(notices) or None}
+
+
+def _weight_logging_awareness(items: list[dict[str, Any]], reminder_timezone: str, now_utc: datetime) -> dict[str, Any]:
+    logged_dates = []
+    for item in items:
+        try:
+            logged_dates.append(date.fromisoformat(str(item.get("LogDate") or "")))
+        except ValueError:
+            continue
+    last_logged_date = max(logged_dates) if logged_dates else None
+    local_today = now_utc.astimezone(_task_timezone(None, reminder_timezone)).date()
+    days_since_logged = max(0, (local_today - last_logged_date).days) if last_logged_date else None
+    return {
+        "LastLoggedDate": last_logged_date.isoformat() if last_logged_date else None,
+        "DaysSinceLogged": days_since_logged,
+        "NeedsLogging": last_logged_date is None or days_since_logged >= TASK_AWARENESS_WEIGHT_DAYS,
+    }
+
+
+def _weekly_review_awareness(reminder_timezone: str, now_utc: datetime) -> dict[str, Any] | None:
+    local_now = now_utc.astimezone(_task_timezone(None, reminder_timezone))
+    is_due_window = (
+        (local_now.weekday() == 6 and local_now.hour >= WEEKLY_REVIEW_SUNDAY_START_HOUR)
+        or (local_now.weekday() == 0 and local_now.hour < WEEKLY_REVIEW_MONDAY_END_HOUR)
+    )
+    if not is_due_window:
+        return None
+    return {
+        "Due": True,
+        "WeekStart": (local_now.date() - timedelta(days=local_now.weekday())).isoformat(),
+        "Window": "Sunday evening to Monday morning",
+        "AgentNotice": "Weekly review is due. Work with the user to summarise and reflect on the previous week.",
+    }
+
+
+def _dashboard_notes_awareness(
+    today_summary: dict[str, Any],
+    previous_summary: dict[str, Any],
+    local_today: date,
+) -> dict[str, Any] | None:
+    reminders: list[dict[str, str]] = []
+    for log_date, summary, reason in (
+        (local_today, today_summary, "Dinner has been logged"),
+        (local_today - timedelta(days=1), previous_summary, "Yesterday's dinner was logged"),
+    ):
+        daily_log = summary.get("DailyLog")
+        entries = summary.get("Entries")
+        if not isinstance(daily_log, dict) or not isinstance(entries, list):
+            continue
+        has_dinner = any(
+            isinstance(entry, dict) and str(entry.get("MealType") or "").strip().lower() == "dinner"
+            for entry in entries
+        )
+        has_notes = bool(str(daily_log.get("Notes") or "").strip())
+        if has_dinner and not has_notes:
+            reminders.append({"LogDate": log_date.isoformat(), "Reason": reason})
+    if not reminders:
+        return None
+    dates = "; ".join(item["LogDate"] for item in reminders)
+    return {
+        "NeedsLogging": True,
+        "Days": reminders,
+        "AgentNotice": f"Dashboard notes are still blank for {dates}. Work with the user to capture a concise day summary.",
+    }
+
+
+def _dinner_reflection_awareness(today_summary: dict[str, Any], local_today: date) -> dict[str, Any] | None:
+    daily_log = today_summary.get("DailyLog")
+    entries = today_summary.get("Entries")
+    if not isinstance(daily_log, dict) or not isinstance(entries, list):
+        return None
+    has_dinner = any(
+        isinstance(entry, dict) and str(entry.get("MealType") or "").strip().lower() == "dinner"
+        for entry in entries
+    )
+    if not has_dinner:
+        return None
+    missing = []
+    if daily_log.get("HungerBeforeDinner") is None:
+        missing.append("HungerBeforeDinner")
+    if daily_log.get("OverallSatisfaction") is None:
+        missing.append("OverallSatisfaction")
+    if not missing:
+        return None
+    labels = {
+        "HungerBeforeDinner": "hunger before dinner",
+        "OverallSatisfaction": "overall satisfaction",
+    }
+    return {
+        "NeedsLogging": True,
+        "LogDate": local_today.isoformat(),
+        "MissingFields": missing,
+        "AgentNotice": "Dinner has been logged but "
+        + " and ".join(labels[field] for field in missing)
+        + " still need a score. Work with the user to capture the day reflection.",
+    }
+
+
+def _period_status_is_recorded(daily_log: dict[str, Any] | None) -> bool:
+    if not isinstance(daily_log, dict):
+        return False
+    if isinstance(daily_log.get("Period"), bool):
+        return True
+    return bool(str(daily_log.get("PeriodLabel") or "").strip())
+
+
+def _period_day(item: dict[str, Any]) -> bool:
+    if item.get("Period") is True:
+        return True
+    label = str(item.get("PeriodLabel") or "").strip().lower()
+    return bool(label and label not in {"no", "none", "false", "not on period"})
+
+
+def _median_int(values: list[int]) -> int:
+    ordered = sorted(values)
+    midpoint = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[midpoint]
+    return round((ordered[midpoint - 1] + ordered[midpoint]) / 2)
+
+
+def _period_cycle_awareness(
+    today_summary: dict[str, Any],
+    historical_days: list[dict[str, Any]],
+    local_today: date,
+) -> dict[str, Any] | None:
+    if _period_status_is_recorded(today_summary.get("DailyLog")):
+        return None
+    period_dates: list[date] = []
+    for item in historical_days:
+        if not isinstance(item, dict) or not _period_day(item):
+            continue
+        try:
+            period_dates.append(date.fromisoformat(str(item.get("LogDate") or "")))
+        except ValueError:
+            continue
+    period_dates = sorted(set(period_dates))
+    period_starts = [
+        period_date
+        for index, period_date in enumerate(period_dates)
+        if index == 0 or period_date - period_dates[index - 1] > timedelta(days=1)
+    ]
+    intervals = [
+        (current - previous).days
+        for previous, current in zip(period_starts, period_starts[1:])
+        if PERIOD_CYCLE_MIN_DAYS <= (current - previous).days <= PERIOD_CYCLE_MAX_DAYS
+    ]
+    if not intervals:
+        return None
+    cycle_days = _median_int(intervals[-6:])
+    predicted_start = period_starts[-1] + timedelta(days=cycle_days)
+    window_start = predicted_start - timedelta(days=PERIOD_REMINDER_DAYS_BEFORE)
+    window_end = predicted_start + timedelta(days=PERIOD_REMINDER_DAYS_AFTER)
+    if not window_start <= local_today <= window_end:
+        return None
+    return {
+        "NeedsLogging": True,
+        "PredictedStartDate": predicted_start.isoformat(),
+        "WindowStartDate": window_start.isoformat(),
+        "WindowEndDate": window_end.isoformat(),
+        "EstimatedCycleDays": cycle_days,
+        "AgentNotice": "Period status has not been logged and is due around now. Work with the user to record it if appropriate.",
+    }
+
+
+def _daily_details_awareness(
+    today_summary: dict[str, Any],
+    historical_days: list[dict[str, Any]],
+    local_today: date,
+) -> dict[str, Any] | None:
+    daily_log = today_summary.get("DailyLog")
+    daily_log = daily_log if isinstance(daily_log, dict) else None
+    office_mode_missing = not bool(str((daily_log or {}).get("OfficeMode") or "").strip())
+    period_reminder = _period_cycle_awareness(today_summary, historical_days, local_today)
+    if not office_mode_missing and not period_reminder:
+        return None
+    awareness: dict[str, Any] = {"NeedsLogging": True}
+    notices = []
+    if office_mode_missing and local_today.weekday() < 5:
+        awareness["OfficeMode"] = {"NeedsLogging": True, "LogDate": local_today.isoformat()}
+        notices.append("Today's work location is not logged. Work with the user to record Office, WFH, or Other.")
+    if period_reminder:
+        awareness["Period"] = period_reminder
+        notices.append(period_reminder["AgentNotice"])
+    if not notices:
+        return None
+    awareness["AgentNotice"] = " ".join(notices)
+    return awareness
+
+
+def _resting_heart_rate_awareness(
+    items: list[dict[str, Any]],
+    local_today: date,
+    external_subject: str,
+) -> dict[str, Any] | None:
+    latest: tuple[date, int] | None = None
+    for item in items:
+        try:
+            log_date = date.fromisoformat(str(item.get("LogDate") or ""))
+            heart_rate = int(item.get("RestingHeartRate"))
+        except (TypeError, ValueError):
+            continue
+        if latest is None or log_date > latest[0]:
+            latest = (log_date, heart_rate)
+    if latest is None:
+        return None
+    log_date, heart_rate = latest
+    if heart_rate < RESTING_HEART_RATE_ALERT_THRESHOLD or (local_today - log_date).days > RESTING_HEART_RATE_ALERT_MAX_AGE_DAYS:
+        return None
+    alert_key = f"resting-heart-rate:{log_date.isoformat()}:{heart_rate}"
+    if not _claim_agent_alert(external_subject, alert_key):
+        return None
+    return {
+        "Flagged": True,
+        "LogDate": log_date.isoformat(),
+        "RestingHeartRate": heart_rate,
+        "Threshold": RESTING_HEART_RATE_ALERT_THRESHOLD,
+        "AgentNotice": (
+            f"A resting heart-rate reading of {heart_rate} bpm was flagged for {log_date.isoformat()}. "
+            "Keep illness, medication, sleep, and hydration context in mind; this is a trend cue, not a diagnosis."
+        ),
+    }
+
+
+def _task_awareness(headers: Any) -> dict[str, Any] | None:
+    try:
+        principal = _require_principal(headers)
+        access_token, account = _refresh_access_for_principal(principal)
+        headers_with_token = _authorized_headers(access_token)
+        context = _http_json("GET", "/api/integrations/health-mcp/context", headers=headers_with_token)
+        tasks_payload = _http_json("GET", "/api/tasks?view=open", headers=headers_with_token)
+        weight_payload = _http_json("GET", "/api/integrations/health-mcp/weight-trend?days=365", headers=headers_with_token)
+        tasks = tasks_payload.get("Tasks")
+        if not isinstance(tasks, list):
+            return None
+        reminder_timezone = str(context.get("ReminderTimeZone") or "UTC")
+        now_utc = _utc_now()
+        local_today = now_utc.astimezone(_task_timezone(None, reminder_timezone)).date()
+        measurements_payload = _http_json(
+            "GET",
+            (
+                "/api/integrations/health-mcp/measurements"
+                f"?start_date={(local_today - timedelta(days=RESTING_HEART_RATE_ALERT_MAX_AGE_DAYS)).isoformat()}"
+                f"&end_date={local_today.isoformat()}&limit=10"
+            ),
+            headers=headers_with_token,
+        )
+        today_summary = _http_json(
+            "GET", f"/api/integrations/health-mcp/summary?date={local_today.isoformat()}", headers=headers_with_token
+        )
+        previous_summary = _http_json(
+            "GET",
+            f"/api/integrations/health-mcp/summary?date={(local_today - timedelta(days=1)).isoformat()}",
+            headers=headers_with_token,
+        )
+        history_payload = _http_json(
+            "GET",
+            (
+                "/api/integrations/health-mcp/history?history_type=days"
+                f"&start_date={(local_today - timedelta(days=365)).isoformat()}&end_date={local_today.isoformat()}&limit=365"
+            ),
+            headers=headers_with_token,
+        )
+        awareness = _health_task_items(
+            [task for task in tasks if isinstance(task, dict)],
+            int(account["everday_user_id"]),
+            reminder_timezone,
+            now_utc,
+        )
+        weekly_review = _weekly_review_awareness(reminder_timezone, now_utc)
+        if weekly_review:
+            awareness["WeeklyReview"] = weekly_review
+            awareness["AgentNotice"] = ". ".join(
+                notice for notice in (awareness["AgentNotice"], weekly_review["AgentNotice"]) if notice
+            )
+        weight_items = weight_payload.get("Items")
+        weight_reminder = _weight_logging_awareness(
+            [item for item in weight_items if isinstance(item, dict)] if isinstance(weight_items, list) else [],
+            reminder_timezone,
+            now_utc,
+        )
+        if weight_reminder["NeedsLogging"]:
+            awareness["WeightReminder"] = weight_reminder
+            if weight_reminder["LastLoggedDate"]:
+                weight_notice = (
+                    f"Weight has not been logged for {weight_reminder['DaysSinceLogged']} days "
+                    f"(last logged {weight_reminder['LastLoggedDate']})."
+                )
+            else:
+                weight_notice = "No weight has been logged in the last 365 days."
+            awareness["AgentNotice"] = ". ".join(
+                notice for notice in (awareness["AgentNotice"], weight_notice) if notice
+            )
+        measurement_items = measurements_payload.get("Items")
+        resting_heart_rate_alert = _resting_heart_rate_awareness(
+            [item for item in measurement_items if isinstance(item, dict)] if isinstance(measurement_items, list) else [],
+            local_today,
+            str(principal["subject"]),
+        )
+        if resting_heart_rate_alert:
+            awareness["RestingHeartRateAlert"] = resting_heart_rate_alert
+            awareness["AgentNotice"] = ". ".join(
+                notice for notice in (awareness["AgentNotice"], resting_heart_rate_alert["AgentNotice"]) if notice
+            )
+        notes_reminder = _dashboard_notes_awareness(today_summary, previous_summary, local_today)
+        if notes_reminder:
+            awareness["DashboardNotesReminder"] = notes_reminder
+            awareness["AgentNotice"] = ". ".join(
+                notice for notice in (awareness["AgentNotice"], notes_reminder["AgentNotice"]) if notice
+            )
+        dinner_reflection = _dinner_reflection_awareness(today_summary, local_today)
+        if dinner_reflection:
+            awareness["DinnerReflectionReminder"] = dinner_reflection
+            awareness["AgentNotice"] = ". ".join(
+                notice for notice in (awareness["AgentNotice"], dinner_reflection["AgentNotice"]) if notice
+            )
+        historical_days = history_payload.get("Items")
+        daily_details_reminder = _daily_details_awareness(
+            today_summary,
+            [item for item in historical_days if isinstance(item, dict)] if isinstance(historical_days, list) else [],
+            local_today,
+        )
+        if daily_details_reminder:
+            awareness["DailyDetailsReminder"] = daily_details_reminder
+            awareness["AgentNotice"] = ". ".join(
+                notice for notice in (awareness["AgentNotice"], daily_details_reminder["AgentNotice"]) if notice
+            )
+        return awareness
+    except (KeyError, TypeError, ValueError, RuntimeError):
+        return None
 
 
 def _everday_profile(access_token: str) -> dict[str, Any]:
@@ -1033,6 +1485,41 @@ def _tool_get_goals(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
         "Date": str(arguments.get("date") or _today_iso()),
         "Targets": targets,
     }
+
+
+def _tool_update_targets(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    field_map = {
+        "daily_calorie_target": "DailyCalorieTarget",
+        "protein_target_min": "ProteinTargetMin",
+        "protein_target_max": "ProteinTargetMax",
+        "step_target": "StepTarget",
+        "step_kcal_factor": "StepKcalFactor",
+        "fibre_target": "FibreTarget",
+        "carbs_target": "CarbsTarget",
+        "fat_target": "FatTarget",
+        "saturated_fat_target": "SaturatedFatTarget",
+        "sugar_target": "SugarTarget",
+        "sodium_target": "SodiumTarget",
+    }
+    payload = {
+        payload_name: arguments[argument_name]
+        for argument_name, payload_name in field_map.items()
+        if argument_name in arguments
+    }
+    if not payload:
+        raise ValueError("Provide at least one target to update.")
+    result = _http_json(
+        "PUT",
+        "/api/health/settings",
+        payload=payload,
+        headers=_authorized_headers(access_token),
+    )
+    targets = result.get("Targets")
+    if not isinstance(targets, dict):
+        raise RuntimeError("Everday settings response did not contain Targets.")
+    return {"Targets": targets}
 
 
 def _tool_get_history(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
@@ -1633,6 +2120,27 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
         "handler": _tool_get_goals,
+    },
+    "update_targets": {
+        "description": "Update one or more current Everday health targets. These are account-level targets used for current and future daily summaries, not a one-day historical snapshot.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "daily_calorie_target": {"type": "integer", "minimum": 0},
+                "protein_target_min": {"type": "number", "minimum": 0},
+                "protein_target_max": {"type": "number", "minimum": 0},
+                "step_target": {"type": "integer", "minimum": 0},
+                "step_kcal_factor": {"type": "number", "minimum": 0},
+                "fibre_target": {"type": "number", "minimum": 0},
+                "carbs_target": {"type": "number", "minimum": 0},
+                "fat_target": {"type": "number", "minimum": 0},
+                "saturated_fat_target": {"type": "number", "minimum": 0},
+                "sugar_target": {"type": "number", "minimum": 0},
+                "sodium_target": {"type": "number", "minimum": 0},
+            },
+            "additionalProperties": False,
+        },
+        "handler": _tool_update_targets,
     },
     "get_connection_context": {
         "description": "Return the linked Everday user context, including timezone and meal-slot defaults, so the client can avoid date or enum guesses.",
@@ -2261,6 +2769,12 @@ def _handle_jsonrpc(payload: dict[str, Any], headers: Any) -> dict[str, Any] | N
         handler = TOOLS[name]["handler"]
         try:
             result = handler(arguments, headers)
+            if isinstance(result, dict):
+                awareness = _task_awareness(headers)
+                if awareness is not None:
+                    result["TaskAwareness"] = awareness
+                    if awareness["AgentNotice"]:
+                        result["AgentNotice"] = awareness["AgentNotice"]
             return {"jsonrpc": "2.0", "id": request_id, "result": _json_response(result)}
         except (ValueError, RuntimeError) as exc:
             return {
