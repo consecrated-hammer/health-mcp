@@ -1187,6 +1187,7 @@ def _tool_log_meal_manual(arguments: dict[str, Any], headers: Any) -> dict[str, 
         "SodiumPerServing": arguments.get("sodium"),
         "ServingQuantity": float(arguments.get("serving_quantity") or 1.0),
         "ServingUnit": str(arguments.get("serving_unit") or "serving"),
+        "Quantity": float(arguments.get("quantity") or 1.0),
     }
     return _http_json(
         "POST",
@@ -1912,7 +1913,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "handler": _tool_log_meal_image,
     },
     "log_meal_manual": {
-        "description": "Log a meal with exact calories and optional macros into the linked Everday user's health log.",
+        "description": "Log a meal with exact calories and optional macros. Reusing a food name reuses its catalogue food while preserving different nutrition on this meal entry.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1927,6 +1928,7 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "sodium": {"type": "number", "minimum": 0},
                 "serving_quantity": {"type": "number", "exclusiveMinimum": 0},
                 "serving_unit": {"type": "string"},
+                "quantity": {"type": "number", "exclusiveMinimum": 0, "description": "Consumed multiplier of the base serving, for example 0.75 pie or 0.2 of a 100 g serving."},
                 "date": {"type": "string", "description": "YYYY-MM-DD. Defaults to today's server date."},
                 "meal_type": {
                     "type": "string",
