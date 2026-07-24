@@ -76,9 +76,7 @@ class UpdateTargetsToolTests(unittest.TestCase):
     def test_set_goal_applies_goal_with_optional_overrides(self) -> None:
         response = {
             "Goal": {"GoalType": "lose", "BmiMin": 20.0, "BmiMax": 25.0, "TargetWeightKg": 70.0},
-            "DailyCalorieTarget": 1800,
-            "ProteinTargetMin": 120.0,
-            "ProteinTargetMax": 150.0,
+            "Targets": {"DailyCalorieTarget": 1600, "ProteinTargetMin": 100.0, "StepTarget": 7000},
         }
         with (
             patch.object(app, "_require_principal", return_value={"subject": "test-subject"}),
@@ -92,24 +90,21 @@ class UpdateTargetsToolTests(unittest.TestCase):
                     "bmi_max": 25.0,
                     "duration_months": 9,
                     "target_weight_kg": 70.0,
-                    "daily_calorie_target": 1800,
                 },
                 {},
             )
 
         self.assertEqual(result["Goal"], response["Goal"])
-        self.assertEqual(result["Targets"]["DailyCalorieTarget"], 1800)
+        self.assertEqual(result["Targets"], response["Targets"])
         request.assert_called_once_with(
             "POST",
-            "/api/health/settings/ai-recommendations",
+            "/api/health/settings/goal",
             payload={
                 "GoalType": "lose",
                 "BmiMin": 20.0,
                 "BmiMax": 25.0,
                 "DurationMonths": 9,
                 "TargetWeightKgOverride": 70.0,
-                "DailyCalorieTargetOverride": 1800,
-                "ApplyGoal": True,
             },
             headers={"Authorization": "Bearer access-token"},
         )
@@ -120,6 +115,26 @@ class UpdateTargetsToolTests(unittest.TestCase):
         self.assertNotIn("set_goal", app.IDEMPOTENT_WRITE_TOOLS)
         self.assertFalse(app._tool_annotations("set_goal")["readOnlyHint"])
         self.assertNotIn("idempotentHint", app._tool_annotations("set_goal"))
+
+    def test_preview_goal_recommendation_does_not_apply_goal(self) -> None:
+        response = {"Goal": {"GoalType": "lose"}, "DailyCalorieTarget": 1798}
+        with (
+            patch.object(app, "_require_principal", return_value={"subject": "test-subject"}),
+            patch.object(app, "_refresh_access_for_principal", return_value=("access-token", {})),
+            patch.object(app, "_http_json", return_value=response) as request,
+        ):
+            result = app._tool_preview_goal_recommendation(
+                {"goal_type": "lose", "bmi_min": 20.0, "bmi_max": 25.0},
+                {},
+            )
+
+        self.assertEqual(result, response)
+        request.assert_called_once_with(
+            "POST",
+            "/api/health/settings/ai-recommendations",
+            payload={"GoalType": "lose", "BmiMin": 20.0, "BmiMax": 25.0},
+            headers={"Authorization": "Bearer access-token"},
+        )
 
 
 class TaskAwarenessTests(unittest.TestCase):

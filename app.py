@@ -1540,40 +1540,53 @@ def _tool_set_goal(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
         "duration_months": "DurationMonths",
         "end_date": "EndDateOverride",
         "target_weight_kg": "TargetWeightKgOverride",
-        "daily_calorie_target": "DailyCalorieTargetOverride",
     }
     payload = {
         payload_name: arguments[argument_name]
         for argument_name, payload_name in field_map.items()
         if argument_name in arguments
     }
-    payload["ApplyGoal"] = True
     result = _http_json(
+        "POST",
+        "/api/health/settings/goal",
+        payload=payload,
+        headers=_authorized_headers(access_token),
+    )
+    goal = result.get("Goal")
+    targets = result.get("Targets")
+    if not isinstance(goal, dict):
+        raise RuntimeError("Everday did not return the applied goal.")
+    if not isinstance(targets, dict):
+        raise RuntimeError("Everday did not return current targets.")
+    return {
+        "Goal": goal,
+        "Targets": targets,
+    }
+
+
+def _tool_preview_goal_recommendation(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    field_map = {
+        "goal_type": "GoalType",
+        "bmi_min": "BmiMin",
+        "bmi_max": "BmiMax",
+        "start_date": "StartDate",
+        "duration_months": "DurationMonths",
+        "end_date": "EndDateOverride",
+        "target_weight_kg": "TargetWeightKgOverride",
+    }
+    payload = {
+        payload_name: arguments[argument_name]
+        for argument_name, payload_name in field_map.items()
+        if argument_name in arguments
+    }
+    return _http_json(
         "POST",
         "/api/health/settings/ai-recommendations",
         payload=payload,
         headers=_authorized_headers(access_token),
     )
-    goal = result.get("Goal")
-    if not isinstance(goal, dict):
-        raise RuntimeError("Everday did not return the applied goal.")
-    return {
-        "Goal": goal,
-        "Targets": {
-            key: result.get(key)
-            for key in (
-                "DailyCalorieTarget",
-                "ProteinTargetMin",
-                "ProteinTargetMax",
-                "FibreTarget",
-                "CarbsTarget",
-                "FatTarget",
-                "SaturatedFatTarget",
-                "SugarTarget",
-                "SodiumTarget",
-            )
-        },
-    }
 
 
 def _tool_get_history(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
@@ -2196,7 +2209,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "handler": _tool_update_targets,
     },
     "set_goal": {
-        "description": "Create or replace the linked Everday user's active health goal. Applies the BMI range, target weight or derived target BMI, timeframe, and resulting nutrition targets to the account.",
+        "description": "Create or replace the linked Everday user's active outcome goal. This changes goal progress context only; use update_targets to change active daily nutrition targets.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -2207,12 +2220,29 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "duration_months": {"type": "integer", "minimum": 1, "maximum": 36, "description": "Defaults to 6 when omitted."},
                 "end_date": {"type": "string", "description": "YYYY-MM-DD. Overrides duration_months when supplied."},
                 "target_weight_kg": {"type": "number", "exclusiveMinimum": 0, "description": "Optional exact target weight; Everday derives and stores its corresponding target BMI."},
-                "daily_calorie_target": {"type": "integer", "minimum": 0, "description": "Optional override for the goal-derived daily calorie target."},
             },
             "required": ["goal_type", "bmi_min", "bmi_max"],
             "additionalProperties": False,
         },
         "handler": _tool_set_goal,
+    },
+    "preview_goal_recommendation": {
+        "description": "Preview a calorie and nutrition recommendation for a proposed outcome goal. This is advisory only and does not apply a goal or change active targets.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "goal_type": {"type": "string", "enum": ["lose", "maintain", "gain"]},
+                "bmi_min": {"type": "number", "exclusiveMinimum": 0, "maximum": 60},
+                "bmi_max": {"type": "number", "exclusiveMinimum": 0, "maximum": 60},
+                "start_date": {"type": "string", "description": "YYYY-MM-DD. Defaults to today."},
+                "duration_months": {"type": "integer", "minimum": 1, "maximum": 36, "description": "Defaults to 6 when omitted."},
+                "end_date": {"type": "string", "description": "YYYY-MM-DD. Overrides duration_months when supplied."},
+                "target_weight_kg": {"type": "number", "exclusiveMinimum": 0},
+            },
+            "required": ["goal_type", "bmi_min", "bmi_max"],
+            "additionalProperties": False,
+        },
+        "handler": _tool_preview_goal_recommendation,
     },
     "get_connection_context": {
         "description": "Return the linked Everday user context, including timezone and meal-slot defaults, so the client can avoid date or enum guesses.",

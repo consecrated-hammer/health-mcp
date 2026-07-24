@@ -11,7 +11,7 @@ Recipe and product reviews are full read/add/edit tools: `upsert_recipe_review` 
 - Links an external identity to an Everday user
 - Encrypts refresh tokens before storing them in SQLite
 - Serves MCP-compatible health tools over HTTP
-- Reads active health goals through `get_goals`, and creates or replaces goal plans through `set_goal`
+- Reads active health goals through `get_goals`, previews recommendations through `preview_goal_recommendation`, and creates or replaces outcome goals through `set_goal` without changing active targets
 - Updates current calorie, macro, step, and sodium targets through `update_targets`
 - Adds task awareness after successful Health MCP reads and writes: all overdue Health tasks plus tasks due in the next two hours
 - Flags a missing weigh-in to the agent when the latest logged weight is eight or more days old
