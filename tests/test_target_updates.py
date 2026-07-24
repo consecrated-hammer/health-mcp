@@ -17,6 +17,25 @@ import app  # noqa: E402
 
 
 class UpdateTargetsToolTests(unittest.TestCase):
+    def test_get_goals_returns_current_targets_and_active_goal(self) -> None:
+        settings = {
+            "Targets": {"DailyCalorieTarget": 1500, "StepTarget": 8500},
+            "Goal": {"GoalType": "lose", "BmiMin": 20.0, "BmiMax": 25.0, "TargetWeightKg": 70.0},
+        }
+        with (
+            patch.object(app, "_require_principal", return_value={"subject": "test-subject"}),
+            patch.object(app, "_refresh_access_for_principal", return_value=("access-token", {})),
+            patch.object(app, "_http_json", return_value=settings) as request,
+        ):
+            result = app._tool_get_goals({}, {})
+
+        self.assertEqual(result, {"Targets": settings["Targets"], "Goal": settings["Goal"]})
+        request.assert_called_once_with(
+            "GET",
+            "/api/health/settings",
+            headers={"Authorization": "Bearer access-token"},
+        )
+
     def test_forwards_only_requested_target_fields(self) -> None:
         with (
             patch.object(app, "_require_principal", return_value={"subject": "test-subject"}),
@@ -53,6 +72,54 @@ class UpdateTargetsToolTests(unittest.TestCase):
         self.assertIn("update_targets", app.IDEMPOTENT_WRITE_TOOLS)
         self.assertFalse(app._tool_annotations("update_targets")["readOnlyHint"])
         self.assertTrue(app._tool_annotations("update_targets")["idempotentHint"])
+
+    def test_set_goal_applies_goal_with_optional_overrides(self) -> None:
+        response = {
+            "Goal": {"GoalType": "lose", "BmiMin": 20.0, "BmiMax": 25.0, "TargetWeightKg": 70.0},
+            "DailyCalorieTarget": 1800,
+            "ProteinTargetMin": 120.0,
+            "ProteinTargetMax": 150.0,
+        }
+        with (
+            patch.object(app, "_require_principal", return_value={"subject": "test-subject"}),
+            patch.object(app, "_refresh_access_for_principal", return_value=("access-token", {})),
+            patch.object(app, "_http_json", return_value=response) as request,
+        ):
+            result = app._tool_set_goal(
+                {
+                    "goal_type": "lose",
+                    "bmi_min": 20.0,
+                    "bmi_max": 25.0,
+                    "duration_months": 9,
+                    "target_weight_kg": 70.0,
+                    "daily_calorie_target": 1800,
+                },
+                {},
+            )
+
+        self.assertEqual(result["Goal"], response["Goal"])
+        self.assertEqual(result["Targets"]["DailyCalorieTarget"], 1800)
+        request.assert_called_once_with(
+            "POST",
+            "/api/health/settings/ai-recommendations",
+            payload={
+                "GoalType": "lose",
+                "BmiMin": 20.0,
+                "BmiMax": 25.0,
+                "DurationMonths": 9,
+                "TargetWeightKgOverride": 70.0,
+                "DailyCalorieTargetOverride": 1800,
+                "ApplyGoal": True,
+            },
+            headers={"Authorization": "Bearer access-token"},
+        )
+
+    def test_set_goal_is_a_non_idempotent_write_tool(self) -> None:
+        self.assertIn("set_goal", app.TOOLS)
+        self.assertNotIn("set_goal", app.READ_ONLY_TOOLS)
+        self.assertNotIn("set_goal", app.IDEMPOTENT_WRITE_TOOLS)
+        self.assertFalse(app._tool_annotations("set_goal")["readOnlyHint"])
+        self.assertNotIn("idempotentHint", app._tool_annotations("set_goal"))
 
 
 class TaskAwarenessTests(unittest.TestCase):
