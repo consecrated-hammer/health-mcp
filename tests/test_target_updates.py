@@ -456,12 +456,67 @@ class HealthTaskToolsTests(unittest.TestCase):
         self.assertEqual(request.call_args_list[3].args[:2], ("POST", "/api/tasks/41/snooze"))
         self.assertEqual(request.call_args_list[3].kwargs["payload"], {"Minutes": 15})
 
+    def test_reopen_health_task_uses_completed_scope(self) -> None:
+        with (
+            patch.object(app, "_require_principal", return_value={"subject": "test-subject"}),
+            patch.object(app, "_refresh_access_for_principal", return_value=("access-token", {})),
+            patch.object(app, "_http_json", side_effect=[{"Tasks": [self.health_task]}, self.health_task]) as request,
+        ):
+            result = app._tool_reopen_health_task({"task_id": 41}, {})
+
+        self.assertEqual(result, self.health_task)
+        self.assertEqual(
+            request.call_args_list,
+            [
+                call("GET", "/api/tasks?view=completed", headers={"Authorization": "Bearer access-token"}),
+                call(
+                    "PUT",
+                    "/api/tasks/41",
+                    payload={"IsCompleted": False, "RelatedModule": "health"},
+                    headers={"Authorization": "Bearer access-token"},
+                ),
+            ],
+        )
+
+    def test_reopen_rejects_recurring_health_task(self) -> None:
+        recurring_task = {**self.health_task, "RepeatType": "daily"}
+        with (
+            patch.object(app, "_require_principal", return_value={"subject": "test-subject"}),
+            patch.object(app, "_refresh_access_for_principal", return_value=("access-token", {})),
+            patch.object(app, "_http_json", return_value={"Tasks": [recurring_task]}) as request,
+        ):
+            with self.assertRaisesRegex(ValueError, "Recurring Health tasks cannot be reopened"):
+                app._tool_reopen_health_task({"task_id": 41}, {})
+
+        request.assert_called_once_with(
+            "GET",
+            "/api/tasks?view=completed",
+            headers={"Authorization": "Bearer access-token"},
+        )
+
+    def test_delete_health_task_checks_open_then_completed_scope(self) -> None:
+        with (
+            patch.object(app, "_require_principal", return_value={"subject": "test-subject"}),
+            patch.object(app, "_refresh_access_for_principal", return_value=("access-token", {})),
+            patch.object(app, "_http_json", side_effect=[{"Tasks": []}, {"Tasks": [self.health_task]}, None]) as request,
+        ):
+            result = app._tool_delete_health_task({"task_id": 41}, {})
+
+        self.assertIsNone(result)
+        self.assertEqual(request.call_args_list[0].args[:2], ("GET", "/api/tasks?view=open"))
+        self.assertEqual(request.call_args_list[1].args[:2], ("GET", "/api/tasks?view=completed"))
+        self.assertEqual(request.call_args_list[2].args[:2], ("DELETE", "/api/tasks/41"))
+        self.assertNotIn("payload", request.call_args_list[2].kwargs)
+
     def test_health_task_tool_annotations(self) -> None:
         self.assertIn("list_health_tasks", app.TOOLS)
+        self.assertIn("reopen_health_task", app.TOOLS)
+        self.assertIn("delete_health_task", app.DESTRUCTIVE_TOOLS)
         self.assertIn("update_health_task", app.IDEMPOTENT_WRITE_TOOLS)
         self.assertTrue(app._tool_annotations("list_health_tasks")["readOnlyHint"])
         self.assertTrue(app._tool_annotations("update_health_task")["idempotentHint"])
         self.assertFalse(app._tool_annotations("complete_health_task")["readOnlyHint"])
+        self.assertTrue(app._tool_annotations("delete_health_task")["destructiveHint"])
 
 
 if __name__ == "__main__":

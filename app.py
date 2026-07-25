@@ -139,6 +139,7 @@ READ_ONLY_TOOLS = {
 DESTRUCTIVE_TOOLS = {
     "delete_meal",
     "delete_workout",
+    "delete_health_task",
     "disconnect_account",
 }
 
@@ -1513,19 +1514,22 @@ def _task_id(arguments: dict[str, Any]) -> int:
     return task_id
 
 
-def _open_health_task(task_id: int, access_token: str) -> dict[str, Any]:
-    response = _http_json(
-        "GET",
-        "/api/tasks?view=open",
-        headers=_authorized_headers(access_token),
-    )
-    tasks = response.get("Tasks")
-    if not isinstance(tasks, list):
-        raise RuntimeError("Everday did not return Tasks.")
-    for task in tasks:
-        if isinstance(task, dict) and task.get("Id") == task_id and _is_health_task(task):
-            return task
-    raise ValueError("Health task not found or is no longer open.")
+def _health_task(task_id: int, access_token: str, views: tuple[str, ...] = ("open",)) -> dict[str, Any]:
+    for view in views:
+        response = _http_json(
+            "GET",
+            f"/api/tasks?view={urllib.parse.quote(view, safe='')}",
+            headers=_authorized_headers(access_token),
+        )
+        tasks = response.get("Tasks")
+        if not isinstance(tasks, list):
+            raise RuntimeError("Everday did not return Tasks.")
+        for task in tasks:
+            if isinstance(task, dict) and task.get("Id") == task_id and _is_health_task(task):
+                return task
+    if views == ("open",):
+        raise ValueError("Health task not found or is no longer open.")
+    raise ValueError("Health task not found.")
 
 
 def _tool_list_health_tasks(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
@@ -1589,7 +1593,7 @@ def _tool_update_health_task(arguments: dict[str, Any], headers: Any) -> dict[st
     principal = _require_principal(headers)
     access_token, _account = _refresh_access_for_principal(principal)
     task_id = _task_id(arguments)
-    _open_health_task(task_id, access_token)
+    _health_task(task_id, access_token)
     field_map = {
         "title": "Title",
         "description": "Description",
@@ -1629,7 +1633,7 @@ def _tool_complete_health_task(arguments: dict[str, Any], headers: Any) -> dict[
     principal = _require_principal(headers)
     access_token, _account = _refresh_access_for_principal(principal)
     task_id = _task_id(arguments)
-    _open_health_task(task_id, access_token)
+    _health_task(task_id, access_token)
     return _http_json(
         "POST",
         f"/api/tasks/{task_id}/complete",
@@ -1642,7 +1646,7 @@ def _tool_snooze_health_task(arguments: dict[str, Any], headers: Any) -> dict[st
     principal = _require_principal(headers)
     access_token, _account = _refresh_access_for_principal(principal)
     task_id = _task_id(arguments)
-    _open_health_task(task_id, access_token)
+    _health_task(task_id, access_token)
     payload = {
         payload_name: arguments[argument_name]
         for argument_name, payload_name in (("minutes", "Minutes"), ("snooze_until", "SnoozeUntil"))
@@ -1654,6 +1658,33 @@ def _tool_snooze_health_task(arguments: dict[str, Any], headers: Any) -> dict[st
         "POST",
         f"/api/tasks/{task_id}/snooze",
         payload=payload,
+        headers=_authorized_headers(access_token),
+    )
+
+
+def _tool_reopen_health_task(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    task_id = _task_id(arguments)
+    task = _health_task(task_id, access_token, views=("completed",))
+    if str(task.get("RepeatType") or "none").strip().lower() != "none":
+        raise ValueError("Recurring Health tasks cannot be reopened because Everday already created the next occurrence.")
+    return _http_json(
+        "PUT",
+        f"/api/tasks/{task_id}",
+        payload={"IsCompleted": False, "RelatedModule": "health"},
+        headers=_authorized_headers(access_token),
+    )
+
+
+def _tool_delete_health_task(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    task_id = _task_id(arguments)
+    _health_task(task_id, access_token, views=("open", "completed"))
+    return _http_json(
+        "DELETE",
+        f"/api/tasks/{task_id}",
         headers=_authorized_headers(access_token),
     )
 
@@ -2446,6 +2477,26 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
         "handler": _tool_snooze_health_task,
+    },
+    "reopen_health_task": {
+        "description": "Reopen a completed Health task. It remains linked to the Health module.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "integer", "minimum": 1}},
+            "required": ["task_id"],
+            "additionalProperties": False,
+        },
+        "handler": _tool_reopen_health_task,
+    },
+    "delete_health_task": {
+        "description": "Permanently delete an open or completed Health task. Confirm with the user before calling this destructive tool.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "integer", "minimum": 1}},
+            "required": ["task_id"],
+            "additionalProperties": False,
+        },
+        "handler": _tool_delete_health_task,
     },
     "update_targets": {
         "description": "Update one or more current Everday health targets. These are account-level targets used for current and future daily summaries, not a one-day historical snapshot.",
