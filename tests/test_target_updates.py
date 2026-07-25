@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from datetime import date, datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from cryptography.fernet import Fernet
 
@@ -349,6 +349,119 @@ class TaskAwarenessTests(unittest.TestCase):
         self.assertEqual(near_due["EstimatedCycleDays"], 28)
         self.assertIsNone(mid_cycle)
         self.assertIsNone(already_recorded)
+
+
+class HealthTaskToolsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.health_task = {
+            "Id": 41,
+            "Title": "Water at desk",
+            "RelatedModule": "health",
+            "ListName": "Personal",
+        }
+        self.other_task = {
+            "Id": 42,
+            "Title": "Take bins out",
+            "RelatedModule": "chores",
+            "ListName": "Home",
+        }
+
+    def test_list_health_tasks_filters_everday_tasks(self) -> None:
+        with (
+            patch.object(app, "_require_principal", return_value={"subject": "test-subject"}),
+            patch.object(app, "_refresh_access_for_principal", return_value=("access-token", {})),
+            patch.object(app, "_http_json", return_value={"Tasks": [self.health_task, self.other_task]}) as request,
+        ):
+            result = app._tool_list_health_tasks({"view": "open"}, {})
+
+        self.assertEqual(result, {"Tasks": [self.health_task]})
+        request.assert_called_once_with(
+            "GET",
+            "/api/tasks?view=open",
+            headers={"Authorization": "Bearer access-token"},
+        )
+
+    def test_create_health_task_forces_health_module(self) -> None:
+        with (
+            patch.object(app, "_require_principal", return_value={"subject": "test-subject"}),
+            patch.object(app, "_refresh_access_for_principal", return_value=("access-token", {})),
+            patch.object(app, "_http_json", return_value=self.health_task) as request,
+        ):
+            result = app._tool_create_health_task(
+                {"title": "Water at desk", "start_date": "2026-07-25", "start_time": "08:30"},
+                {},
+            )
+
+        self.assertEqual(result, self.health_task)
+        request.assert_called_once_with(
+            "POST",
+            "/api/tasks",
+            payload={"Title": "Water at desk", "StartDate": "2026-07-25", "StartTime": "08:30", "RelatedModule": "health"},
+            headers={"Authorization": "Bearer access-token"},
+        )
+
+    def test_update_health_task_checks_scope_before_updating(self) -> None:
+        with (
+            patch.object(app, "_require_principal", return_value={"subject": "test-subject"}),
+            patch.object(app, "_refresh_access_for_principal", return_value=("access-token", {})),
+            patch.object(app, "_http_json", side_effect=[{"Tasks": [self.health_task]}, self.health_task]) as request,
+        ):
+            result = app._tool_update_health_task({"task_id": 41, "start_time": "09:00"}, {})
+
+        self.assertEqual(result, self.health_task)
+        self.assertEqual(
+            request.call_args_list,
+            [
+                call("GET", "/api/tasks?view=open", headers={"Authorization": "Bearer access-token"}),
+                call(
+                    "PUT",
+                    "/api/tasks/41",
+                    payload={"StartTime": "09:00", "RelatedModule": "health"},
+                    headers={"Authorization": "Bearer access-token"},
+                ),
+            ],
+        )
+
+    def test_complete_and_snooze_reject_non_health_tasks(self) -> None:
+        with (
+            patch.object(app, "_require_principal", return_value={"subject": "test-subject"}),
+            patch.object(app, "_refresh_access_for_principal", return_value=("access-token", {})),
+            patch.object(app, "_http_json", return_value={"Tasks": [self.other_task]}) as request,
+        ):
+            with self.assertRaisesRegex(ValueError, "Health task not found"):
+                app._tool_complete_health_task({"task_id": 42}, {})
+            with self.assertRaisesRegex(ValueError, "Health task not found"):
+                app._tool_snooze_health_task({"task_id": 42, "minutes": 15}, {})
+
+        self.assertEqual(request.call_count, 2)
+        self.assertTrue(all(call.args[0] == "GET" for call in request.call_args_list))
+
+    def test_complete_and_snooze_health_tasks_call_everday(self) -> None:
+        with (
+            patch.object(app, "_require_principal", return_value={"subject": "test-subject"}),
+            patch.object(app, "_refresh_access_for_principal", return_value=("access-token", {})),
+            patch.object(
+                app,
+                "_http_json",
+                side_effect=[{"Tasks": [self.health_task]}, {"Task": self.health_task}, {"Tasks": [self.health_task]}, self.health_task],
+            ) as request,
+        ):
+            complete = app._tool_complete_health_task({"task_id": 41}, {})
+            snoozed = app._tool_snooze_health_task({"task_id": 41, "minutes": 15}, {})
+
+        self.assertEqual(complete, {"Task": self.health_task})
+        self.assertEqual(snoozed, self.health_task)
+        self.assertEqual(request.call_args_list[1].args[:2], ("POST", "/api/tasks/41/complete"))
+        self.assertEqual(request.call_args_list[1].kwargs["payload"], {})
+        self.assertEqual(request.call_args_list[3].args[:2], ("POST", "/api/tasks/41/snooze"))
+        self.assertEqual(request.call_args_list[3].kwargs["payload"], {"Minutes": 15})
+
+    def test_health_task_tool_annotations(self) -> None:
+        self.assertIn("list_health_tasks", app.TOOLS)
+        self.assertIn("update_health_task", app.IDEMPOTENT_WRITE_TOOLS)
+        self.assertTrue(app._tool_annotations("list_health_tasks")["readOnlyHint"])
+        self.assertTrue(app._tool_annotations("update_health_task")["idempotentHint"])
+        self.assertFalse(app._tool_annotations("complete_health_task")["readOnlyHint"])
 
 
 if __name__ == "__main__":

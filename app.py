@@ -115,6 +115,7 @@ READ_ONLY_TOOLS = {
     "get_history_types",
     "get_insight_type_options",
     "get_insights",
+    "list_health_tasks",
     "get_meal",
     "get_meal_slots",
     "get_meal_type_options",
@@ -152,6 +153,7 @@ IDEMPOTENT_WRITE_TOOLS = {
     "upsert_product_review",
     "upsert_recipe_review",
     "upsert_weekly_review_note",
+    "update_health_task",
 }
 
 TASK_AWARENESS_UPCOMING_MINUTES = 120
@@ -1494,6 +1496,168 @@ def _tool_get_goals(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
     }
 
 
+def _is_health_task(task: dict[str, Any]) -> bool:
+    return (
+        str(task.get("RelatedModule") or "").strip().lower() == "health"
+        or str(task.get("ListName") or "").strip().lower() == "health"
+    )
+
+
+def _task_id(arguments: dict[str, Any]) -> int:
+    try:
+        task_id = int(arguments.get("task_id"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("task_id must be a positive integer.") from exc
+    if task_id <= 0:
+        raise ValueError("task_id must be a positive integer.")
+    return task_id
+
+
+def _open_health_task(task_id: int, access_token: str) -> dict[str, Any]:
+    response = _http_json(
+        "GET",
+        "/api/tasks?view=open",
+        headers=_authorized_headers(access_token),
+    )
+    tasks = response.get("Tasks")
+    if not isinstance(tasks, list):
+        raise RuntimeError("Everday did not return Tasks.")
+    for task in tasks:
+        if isinstance(task, dict) and task.get("Id") == task_id and _is_health_task(task):
+            return task
+    raise ValueError("Health task not found or is no longer open.")
+
+
+def _tool_list_health_tasks(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    view = str(arguments.get("view") or "open")
+    response = _http_json(
+        "GET",
+        f"/api/tasks?view={urllib.parse.quote(view, safe='')}",
+        headers=_authorized_headers(access_token),
+    )
+    tasks = response.get("Tasks")
+    if not isinstance(tasks, list):
+        raise RuntimeError("Everday did not return Tasks.")
+    return {"Tasks": [task for task in tasks if isinstance(task, dict) and _is_health_task(task)]}
+
+
+def _tool_create_health_task(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    title = str(arguments.get("title") or "").strip()
+    start_date = str(arguments.get("start_date") or "").strip()
+    if not title:
+        raise ValueError("title is required.")
+    if not start_date:
+        raise ValueError("start_date is required.")
+    field_map = {
+        "description": "Description",
+        "list_name": "ListName",
+        "start_time": "StartTime",
+        "end_date": "EndDate",
+        "end_time": "EndTime",
+        "is_all_day": "IsAllDay",
+        "timezone": "TimeZone",
+        "repeat_type": "RepeatType",
+        "repeat_interval": "RepeatInterval",
+        "repeat_weekdays": "RepeatWeekdays",
+        "repeat_monthday": "RepeatMonthday",
+        "repeat_until_date": "RepeatUntilDate",
+        "reminder_at": "ReminderAt",
+        "reminder_offset_minutes": "ReminderOffsetMinutes",
+        "is_starred": "IsStarred",
+    }
+    payload = {
+        "Title": title,
+        "StartDate": start_date,
+        "RelatedModule": "health",
+    }
+    payload.update(
+        {payload_name: arguments[argument_name] for argument_name, payload_name in field_map.items() if argument_name in arguments}
+    )
+    return _http_json(
+        "POST",
+        "/api/tasks",
+        payload=payload,
+        headers=_authorized_headers(access_token),
+    )
+
+
+def _tool_update_health_task(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    task_id = _task_id(arguments)
+    _open_health_task(task_id, access_token)
+    field_map = {
+        "title": "Title",
+        "description": "Description",
+        "list_name": "ListName",
+        "start_date": "StartDate",
+        "start_time": "StartTime",
+        "end_date": "EndDate",
+        "end_time": "EndTime",
+        "is_all_day": "IsAllDay",
+        "timezone": "TimeZone",
+        "repeat_type": "RepeatType",
+        "repeat_interval": "RepeatInterval",
+        "repeat_weekdays": "RepeatWeekdays",
+        "repeat_monthday": "RepeatMonthday",
+        "repeat_until_date": "RepeatUntilDate",
+        "reminder_at": "ReminderAt",
+        "reminder_offset_minutes": "ReminderOffsetMinutes",
+        "is_starred": "IsStarred",
+    }
+    payload = {
+        payload_name: arguments[argument_name]
+        for argument_name, payload_name in field_map.items()
+        if argument_name in arguments
+    }
+    if not payload:
+        raise ValueError("Provide at least one task field to update.")
+    payload["RelatedModule"] = "health"
+    return _http_json(
+        "PUT",
+        f"/api/tasks/{task_id}",
+        payload=payload,
+        headers=_authorized_headers(access_token),
+    )
+
+
+def _tool_complete_health_task(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    task_id = _task_id(arguments)
+    _open_health_task(task_id, access_token)
+    return _http_json(
+        "POST",
+        f"/api/tasks/{task_id}/complete",
+        payload={},
+        headers=_authorized_headers(access_token),
+    )
+
+
+def _tool_snooze_health_task(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    task_id = _task_id(arguments)
+    _open_health_task(task_id, access_token)
+    payload = {
+        payload_name: arguments[argument_name]
+        for argument_name, payload_name in (("minutes", "Minutes"), ("snooze_until", "SnoozeUntil"))
+        if argument_name in arguments
+    }
+    if not payload:
+        raise ValueError("Provide minutes or snooze_until.")
+    return _http_json(
+        "POST",
+        f"/api/tasks/{task_id}/snooze",
+        payload=payload,
+        headers=_authorized_headers(access_token),
+    )
+
+
 def _tool_update_targets(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
     principal = _require_principal(headers)
     access_token, _account = _refresh_access_for_principal(principal)
@@ -2186,6 +2350,102 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
         "handler": _tool_get_goals,
+    },
+    "list_health_tasks": {
+        "description": "List the linked Everday user's Health tasks. Tasks are limited to those explicitly linked to the Health module or in the Health list.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "view": {
+                    "type": "string",
+                    "enum": ["today", "upcoming", "completed", "open", "starred", "overdue"],
+                    "description": "Defaults to open.",
+                },
+            },
+            "additionalProperties": False,
+        },
+        "handler": _tool_list_health_tasks,
+    },
+    "create_health_task": {
+        "description": "Create a task linked to the Health module. It will appear in Health task awareness when it has a time and is due.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "minLength": 1, "maxLength": 200},
+                "description": {"type": ["string", "null"]},
+                "list_name": {"type": ["string", "null"], "description": "Optional existing Everday task-list name."},
+                "start_date": {"type": "string", "description": "YYYY-MM-DD."},
+                "start_time": {"type": ["string", "null"], "description": "HH:MM in the task timezone."},
+                "end_date": {"type": ["string", "null"], "description": "YYYY-MM-DD."},
+                "end_time": {"type": ["string", "null"], "description": "HH:MM in the task timezone."},
+                "is_all_day": {"type": "boolean"},
+                "timezone": {"type": ["string", "null"], "description": "IANA timezone, for example Australia/Adelaide."},
+                "repeat_type": {"type": "string", "enum": ["none", "daily", "weekly", "monthly", "yearly"]},
+                "repeat_interval": {"type": "integer", "minimum": 1},
+                "repeat_weekdays": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 6}, "description": "Monday is 0; required for weekly repetition."},
+                "repeat_monthday": {"type": ["integer", "null"], "minimum": 1, "maximum": 31},
+                "repeat_until_date": {"type": ["string", "null"], "description": "YYYY-MM-DD."},
+                "reminder_at": {"type": ["string", "null"], "description": "ISO 8601 datetime."},
+                "reminder_offset_minutes": {"type": ["integer", "null"], "minimum": 0},
+                "is_starred": {"type": "boolean"},
+            },
+            "required": ["title", "start_date"],
+            "additionalProperties": False,
+        },
+        "handler": _tool_create_health_task,
+    },
+    "update_health_task": {
+        "description": "Update an open Health task. The task remains linked to the Health module.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "integer", "minimum": 1},
+                "title": {"type": "string", "minLength": 1, "maxLength": 200},
+                "description": {"type": ["string", "null"]},
+                "list_name": {"type": ["string", "null"]},
+                "start_date": {"type": "string", "description": "YYYY-MM-DD."},
+                "start_time": {"type": ["string", "null"], "description": "HH:MM in the task timezone."},
+                "end_date": {"type": ["string", "null"], "description": "YYYY-MM-DD."},
+                "end_time": {"type": ["string", "null"], "description": "HH:MM in the task timezone."},
+                "is_all_day": {"type": "boolean"},
+                "timezone": {"type": ["string", "null"]},
+                "repeat_type": {"type": "string", "enum": ["none", "daily", "weekly", "monthly", "yearly"]},
+                "repeat_interval": {"type": "integer", "minimum": 1},
+                "repeat_weekdays": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 6}},
+                "repeat_monthday": {"type": ["integer", "null"], "minimum": 1, "maximum": 31},
+                "repeat_until_date": {"type": ["string", "null"], "description": "YYYY-MM-DD."},
+                "reminder_at": {"type": ["string", "null"], "description": "ISO 8601 datetime."},
+                "reminder_offset_minutes": {"type": ["integer", "null"], "minimum": 0},
+                "is_starred": {"type": "boolean"},
+            },
+            "required": ["task_id"],
+            "additionalProperties": False,
+        },
+        "handler": _tool_update_health_task,
+    },
+    "complete_health_task": {
+        "description": "Complete an open Health task. Completing a recurring task creates its next occurrence in Everday.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "integer", "minimum": 1}},
+            "required": ["task_id"],
+            "additionalProperties": False,
+        },
+        "handler": _tool_complete_health_task,
+    },
+    "snooze_health_task": {
+        "description": "Snooze an open Health task by a number of minutes or until an ISO 8601 datetime.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "integer", "minimum": 1},
+                "minutes": {"type": "integer", "minimum": 1},
+                "snooze_until": {"type": "string", "description": "ISO 8601 datetime."},
+            },
+            "required": ["task_id"],
+            "additionalProperties": False,
+        },
+        "handler": _tool_snooze_health_task,
     },
     "update_targets": {
         "description": "Update one or more current Everday health targets. These are account-level targets used for current and future daily summaries, not a one-day historical snapshot.",
