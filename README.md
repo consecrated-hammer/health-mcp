@@ -22,6 +22,41 @@ Recipe and product reviews are full read/add/edit tools: `upsert_recipe_review` 
 - Reminds the agent to record weekday work location; period-status reminders are limited to a cycle window inferred from prior logs
 - Separates read-only, idempotent write, and destructive tool groups
 
+## Protocol Versions
+
+The server is **dual-era**: it answers both the legacy `2025-06-18` revision and
+the modern `2026-07-28` revision on the same `/mcp` endpoint.
+
+The era is selected per request. A request carrying
+`_meta["io.modelcontextprotocol/protocolVersion"]` is served as `2026-07-28`;
+anything else falls through to the `initialize` handshake path and is served as
+`2025-06-18`. Legacy responses are unchanged, so existing clients see no
+difference.
+
+Modern requests are validated as the spec requires:
+
+- `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` (on `tools/call`) must be
+  present and must match the request body, including after decoding the
+  `=?base64?...?=` sentinel form. Mismatches return `400` with `-32020`.
+- An unsupported version returns `400` with `-32022` and the supported list.
+- A missing `io.modelcontextprotocol/clientCapabilities` returns `400` with `-32602`.
+- An unknown method returns `404` with `-32601`.
+- `GET` and `DELETE` on `/mcp` return `405`; sessions and resumable streams are
+  not part of either era this server speaks.
+
+`server/discover` is implemented. It advertises `2026-07-28` only, and so does
+the `supported` list on a `-32022`: those lists say which versions a client may
+select through per-request `_meta`, and the legacy revision is reachable solely
+through `initialize`. Listing it would invite a downgrade the modern path
+rejects, and on the error would loop a client that retries as the spec directs.
+
+Not implemented: SSE response streams, `subscriptions/listen`, MRTR, and the
+Tasks and MCP Apps extensions. Every tool here answers in a single round trip,
+so nothing currently needs them.
+
+A legacy `initialize` logs the version the client asked for alongside the
+version served, so a client moving to a newer revision is visible in the logs.
+
 ## Required Environment
 
 - `HEALTH_MCP_EVERDAY_BASE_URL`
@@ -37,11 +72,16 @@ Recipe and product reviews are full read/add/edit tools: `upsert_recipe_review` 
 - `HEALTH_MCP_TIMEOUT_SECONDS`
 - `HEALTH_MCP_MAX_REQUEST_BYTES`
 - `HEALTH_MCP_LINK_SESSION_TTL_MINUTES`
+- `HEALTH_MCP_ALLOWED_ORIGINS` comma-separated allowlist checked against the
+  `Origin` header on `/mcp`. Unset means allow any origin, which is the
+  deployed configuration: the service is reached through the OAuth gateway
+  rather than directly by a browser.
 
 ## Files
 
 - `app.py` service implementation
 - `Dockerfile` container build for deployment
+- `tests/` unit and protocol-conformance tests, run with `unittest`
 
 ## Run
 

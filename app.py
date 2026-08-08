@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import secrets
@@ -48,6 +49,11 @@ class Config:
     timeout_seconds = max(float(os.environ.get("HEALTH_MCP_TIMEOUT_SECONDS", "30")), 1.0)
     max_request_bytes = max(int(os.environ.get("HEALTH_MCP_MAX_REQUEST_BYTES", "10485760")), 1)
     link_session_ttl_minutes = max(int(os.environ.get("HEALTH_MCP_LINK_SESSION_TTL_MINUTES", "30")), 1)
+    allowed_origins = frozenset(
+        value.strip()
+        for value in os.environ.get("HEALTH_MCP_ALLOWED_ORIGINS", "").split(",")
+        if value.strip()
+    )
 
 
 MEAL_SLOT_OPTIONS = [
@@ -3133,19 +3139,259 @@ def _render_link_page(
     return html.encode("utf-8")
 
 
+LEGACY_PROTOCOL_VERSION = "2025-06-18"
+MODERN_PROTOCOL_VERSION = "2026-07-28"
+MODERN_PROTOCOL_VERSIONS = frozenset({MODERN_PROTOCOL_VERSION})
+# Advertised to modern clients, and offered for retry after -32022. It lists
+# only versions selectable through per-request `_meta`: the legacy revision is
+# reachable solely through the `initialize` handshake, so advertising it here
+# would invite a downgrade this path rejects — and, on the error, a retry loop.
+MODERN_SUPPORTED_VERSIONS = [MODERN_PROTOCOL_VERSION]
+
+META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
+META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
+META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
+META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
+
+ERROR_HEADER_MISMATCH = -32020
+ERROR_UNSUPPORTED_PROTOCOL_VERSION = -32022
+ERROR_METHOD_NOT_FOUND = -32601
+ERROR_INVALID_PARAMS = -32602
+
+BASE64_SENTINEL_PREFIX = "=?base64?"
+BASE64_SENTINEL_SUFFIX = "?="
+
+# Methods whose Mcp-Name header mirrors a field in the request body.
+MCP_NAME_SOURCE_FIELDS = {
+    "tools/call": "name",
+    "prompts/get": "name",
+    "resources/read": "uri",
+}
+
+SERVER_INSTRUCTIONS = (
+    "Health tools for Everday: meal, weight, workout, and daily log reads and writes, "
+    "plus Health-linked task management. Most tools require a linked account."
+)
+
+
+def _server_info() -> dict[str, str]:
+    return {"name": "health-mcp", "version": Config.version}
+
+
+def _decode_header_value(value: str) -> str:
+    """Decodes the Base64 sentinel form clients use for non-ASCII header values."""
+    if not (value.startswith(BASE64_SENTINEL_PREFIX) and value.endswith(BASE64_SENTINEL_SUFFIX)):
+        return value
+    encoded = value[len(BASE64_SENTINEL_PREFIX) : -len(BASE64_SENTINEL_SUFFIX)]
+    try:
+        return base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValueError("Malformed Base64 sentinel header value") from exc
+
+
+def _request_meta(payload: dict[str, Any]) -> dict[str, Any] | None:
+    params = payload.get("params")
+    if not isinstance(params, dict):
+        return None
+    meta = params.get("_meta")
+    return meta if isinstance(meta, dict) else None
+
+
+def _is_modern_request(payload: dict[str, Any]) -> bool:
+    """Modern (2026-07-28) requests carry their protocol version per request.
+
+    Legacy clients establish the version once via `initialize` and send no
+    `_meta`, so the presence of this field is what selects the era.
+    """
+    meta = _request_meta(payload)
+    return meta is not None and META_PROTOCOL_VERSION in meta
+
+
+def _jsonrpc_error(
+    request_id: Any,
+    code: int,
+    message: str,
+    data: Any = None,
+) -> dict[str, Any]:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": request_id, "error": error}
+
+
+def _modern_result(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
+    body: dict[str, Any] = {"resultType": "complete", **result}
+    meta = body.setdefault("_meta", {})
+    meta[META_SERVER_INFO] = _server_info()
+    return {"jsonrpc": "2.0", "id": request_id, "result": body}
+
+
+def _tool_descriptors() -> list[dict[str, Any]]:
+    return [
+        {
+            "name": name,
+            "description": spec["description"],
+            "inputSchema": spec["inputSchema"],
+            "annotations": spec.get("annotations") or _tool_annotations(name),
+        }
+        for name, spec in TOOLS.items()
+    ]
+
+
+def _call_tool(name: Any, arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    if name not in TOOLS:
+        return _json_response({"error": f"Unknown tool: {name}"}, tool_error=True)
+    handler = TOOLS[name]["handler"]
+    try:
+        result = handler(arguments, headers)
+        if isinstance(result, dict):
+            awareness = _task_awareness(headers)
+            if awareness is not None:
+                result["TaskAwareness"] = awareness
+                if awareness["AgentNotice"]:
+                    result["AgentNotice"] = awareness["AgentNotice"]
+        return _json_response(result)
+    except (ValueError, RuntimeError) as exc:
+        return _json_response({"error": str(exc)}, tool_error=True)
+    except Exception as exc:  # noqa: BLE001
+        return _json_response({"error": f"Unhandled tool failure: {exc}"}, tool_error=True)
+
+
+def _validate_modern_headers(payload: dict[str, Any], headers: Any) -> str | None:
+    """Returns a description of the first header/body disagreement, else None.
+
+    The body is the source of truth; these headers exist so intermediaries can
+    route without parsing it. Rejecting mismatches keeps a gateway that routes
+    on the header and a server that executes on the body from disagreeing.
+    """
+    method = payload.get("method")
+    meta = _request_meta(payload) or {}
+
+    header_version = (headers.get("MCP-Protocol-Version") or "").strip()
+    if not header_version:
+        return "missing required MCP-Protocol-Version header"
+    body_version = meta.get(META_PROTOCOL_VERSION)
+    if header_version != body_version:
+        return (
+            f"MCP-Protocol-Version header value {header_version!r} "
+            f"does not match body value {body_version!r}"
+        )
+
+    header_method = (headers.get("Mcp-Method") or "").strip()
+    if not header_method:
+        return "missing required Mcp-Method header"
+    if header_method != method:
+        return f"Mcp-Method header value {header_method!r} does not match body value {method!r}"
+
+    name_field = MCP_NAME_SOURCE_FIELDS.get(method or "")
+    if name_field is not None:
+        raw_name = (headers.get("Mcp-Name") or "").strip()
+        if not raw_name:
+            return "missing required Mcp-Name header"
+        try:
+            header_name = _decode_header_value(raw_name)
+        except ValueError as exc:
+            return str(exc)
+        params = payload.get("params") or {}
+        body_name = params.get(name_field)
+        if header_name != body_name:
+            return f"Mcp-Name header value {header_name!r} does not match body value {body_name!r}"
+
+    return None
+
+
+def _handle_modern_jsonrpc(
+    payload: dict[str, Any],
+    headers: Any,
+) -> tuple[int, dict[str, Any] | None]:
+    """Handles a 2026-07-28 request. Returns the HTTP status and response body."""
+    request_id = payload.get("id")
+    method = payload.get("method")
+    params = payload.get("params") or {}
+
+    # Header requirements for notification POSTs are undefined in this revision.
+    if "id" not in payload:
+        return 202, None
+
+    mismatch = _validate_modern_headers(payload, headers)
+    if mismatch is not None:
+        return 400, _jsonrpc_error(
+            request_id, ERROR_HEADER_MISMATCH, f"Header mismatch: {mismatch}"
+        )
+
+    meta = _request_meta(payload) or {}
+    requested_version = meta.get(META_PROTOCOL_VERSION)
+    if requested_version not in MODERN_PROTOCOL_VERSIONS:
+        return 400, _jsonrpc_error(
+            request_id,
+            ERROR_UNSUPPORTED_PROTOCOL_VERSION,
+            "Unsupported protocol version",
+            {"supported": list(MODERN_SUPPORTED_VERSIONS), "requested": requested_version},
+        )
+
+    if not isinstance(meta.get(META_CLIENT_CAPABILITIES), dict):
+        return 400, _jsonrpc_error(
+            request_id,
+            ERROR_INVALID_PARAMS,
+            f"Missing required _meta field {META_CLIENT_CAPABILITIES}",
+        )
+
+    if method == "server/discover":
+        return 200, _modern_result(
+            request_id,
+            {
+                "supportedVersions": list(MODERN_SUPPORTED_VERSIONS),
+                "capabilities": {"tools": {}},
+                "instructions": SERVER_INSTRUCTIONS,
+            },
+        )
+
+    if method == "ping":
+        return 200, _modern_result(request_id, {})
+
+    if method == "tools/list":
+        return 200, _modern_result(request_id, {"tools": _tool_descriptors()})
+
+    if method == "tools/call":
+        result = _call_tool(params.get("name"), params.get("arguments") or {}, headers)
+        return 200, _modern_result(request_id, result)
+
+    return 404, _jsonrpc_error(
+        request_id, ERROR_METHOD_NOT_FOUND, f"Method not found: {method}"
+    )
+
+
+def _handle_mcp_post(
+    payload: dict[str, Any],
+    headers: Any,
+) -> tuple[int, dict[str, Any] | None]:
+    if _is_modern_request(payload):
+        return _handle_modern_jsonrpc(payload, headers)
+    legacy = _handle_jsonrpc(payload, headers)
+    if legacy is None:
+        return 202, None
+    return 200, legacy
+
+
 def _handle_jsonrpc(payload: dict[str, Any], headers: Any) -> dict[str, Any] | None:
     request_id = payload.get("id")
     method = payload.get("method")
     params = payload.get("params") or {}
 
     if method == "initialize":
+        # Logged so we can see when clients start asking for a newer revision.
+        print(
+            f"[health-mcp] legacy initialize requested={params.get('protocolVersion')!r} "
+            f"answered={LEGACY_PROTOCOL_VERSION}",
+            flush=True,
+        )
         return {
             "jsonrpc": "2.0",
             "id": request_id,
             "result": {
-                "protocolVersion": "2025-06-18",
+                "protocolVersion": LEGACY_PROTOCOL_VERSION,
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "health-mcp", "version": Config.version},
+                "serverInfo": _server_info(),
             },
         }
 
@@ -3158,49 +3404,11 @@ def _handle_jsonrpc(payload: dict[str, Any], headers: Any) -> dict[str, Any] | N
         return {"jsonrpc": "2.0", "id": request_id, "result": {}}
 
     if method == "tools/list":
-        tools = []
-        for name, spec in TOOLS.items():
-            tools.append(
-                {
-                    "name": name,
-                    "description": spec["description"],
-                    "inputSchema": spec["inputSchema"],
-                    "annotations": spec.get("annotations") or _tool_annotations(name),
-                }
-            )
-        return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": tools}}
+        return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": _tool_descriptors()}}
 
     if method == "tools/call":
-        name = params.get("name")
-        arguments = params.get("arguments") or {}
-        if name not in TOOLS:
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": _json_response({"error": f"Unknown tool: {name}"}, tool_error=True),
-            }
-        handler = TOOLS[name]["handler"]
-        try:
-            result = handler(arguments, headers)
-            if isinstance(result, dict):
-                awareness = _task_awareness(headers)
-                if awareness is not None:
-                    result["TaskAwareness"] = awareness
-                    if awareness["AgentNotice"]:
-                        result["AgentNotice"] = awareness["AgentNotice"]
-            return {"jsonrpc": "2.0", "id": request_id, "result": _json_response(result)}
-        except (ValueError, RuntimeError) as exc:
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": _json_response({"error": str(exc)}, tool_error=True),
-            }
-        except Exception as exc:  # noqa: BLE001
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": _json_response({"error": f"Unhandled tool failure: {exc}"}, tool_error=True),
-            }
+        result = _call_tool(params.get("name"), params.get("arguments") or {}, headers)
+        return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
     return {
         "jsonrpc": "2.0",
@@ -3394,6 +3602,25 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_error(404, "Not Found")
 
+    def _origin_allowed(self) -> bool:
+        """Guards against DNS rebinding when an origin allowlist is configured.
+
+        Unset means allow, because this service is reached through the OAuth
+        gateway rather than directly by a browser.
+        """
+        if not Config.allowed_origins:
+            return True
+        origin = (self.headers.get("Origin") or "").strip()
+        return not origin or origin in Config.allowed_origins
+
+    def do_DELETE(self) -> None:
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/mcp":
+            # Sessions are not part of any revision this server speaks.
+            self.send_error(405, "Method Not Allowed")
+            return
+        self.send_error(404, "Not Found")
+
     def do_POST(self) -> None:
         path = urllib.parse.urlparse(self.path).path
         if path.startswith("/link/"):
@@ -3405,6 +3632,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path != "/mcp":
             self.send_error(404, "Not Found")
+            return
+        if not self._origin_allowed():
+            self._send_json(403, {"error": "forbidden_origin"})
             return
 
         try:
@@ -3428,13 +3658,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "invalid_request"})
             return
 
-        response = _handle_jsonrpc(payload, self.headers)
+        status, response = _handle_mcp_post(payload, self.headers)
         if response is None:
-            self.send_response(202)
+            self.send_response(status)
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
-        self._send_json(200, response)
+        self._send_json(status, response)
 
 
 def main() -> None:
