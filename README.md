@@ -83,6 +83,18 @@ version served, so a client moving to a newer revision is visible in the logs.
 - `Dockerfile` container build for deployment
 - `tests/` unit and protocol-conformance tests, run with `unittest`
 
+## Test
+
+The checked-in `.venv` has neither `pytest` nor `cryptography`, so run the suite
+in the runtime image, which has what `app.py` imports:
+
+```bash
+docker run --rm -v "$PWD":/src -w /src \
+  -e HEALTH_MCP_EVERDAY_BASE_URL=http://everday.test \
+  -e HEALTH_MCP_STATE_DB_PATH=/tmp/t.sqlite3 \
+  --entrypoint python health-mcp:local -m unittest discover -s tests
+```
+
 ## Run
 
 ```bash
