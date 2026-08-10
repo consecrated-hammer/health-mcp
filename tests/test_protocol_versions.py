@@ -81,6 +81,9 @@ class SDKMigrationTests(unittest.TestCase):
         self.assertEqual(paths.count("/"), 1)
         self.assertEqual(paths.count("/link/{session_token:path}"), 1)
 
+    def test_sdk_transport_uses_the_deployed_bind_host(self) -> None:
+        self.assertEqual(server.mcp_server._session_manager.security_settings, None)
+
     def test_configured_origin_allowlist_still_rejects_unknown_origins(self) -> None:
         async def exercise() -> list[dict]:
             sent: list[dict] = []

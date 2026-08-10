@@ -273,6 +273,7 @@ sdk_app = mcp_server.streamable_http_app(
     json_response=True,
     stateless_http=True,
     max_request_body_size=health.Config.max_request_bytes,
+    host=health.Config.host,
     custom_starlette_routes=routes,
 )
 
