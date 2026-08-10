@@ -1,4 +1,5 @@
 import json
+import logging
 import urllib.parse
 from contextlib import asynccontextmanager
 from typing import Any
@@ -12,6 +13,13 @@ from starlette.responses import JSONResponse, PlainTextResponse, Response
 from starlette.routing import Route
 
 import app as health
+import mcp_apps
+from output_schemas import OUTPUT_SCHEMAS
+
+
+# Use Uvicorn's configured operational logger so INFO telemetry is emitted in
+# production without adding a second handler or changing global log settings.
+logger = logging.getLogger("uvicorn.error")
 
 
 @asynccontextmanager
@@ -26,23 +34,58 @@ def _tool_descriptors() -> list[types.Tool]:
             name=name,
             description=spec["description"],
             inputSchema=spec["inputSchema"],
+            outputSchema=spec.get("outputSchema") or OUTPUT_SCHEMAS[name],
             annotations=types.ToolAnnotations.model_validate(
                 spec.get("annotations") or health._tool_annotations(name)
             ),
+            _meta=spec.get("_meta"),
         )
-        for name, spec in health.TOOLS.items()
+        for name, spec in {**health.TOOLS, **mcp_apps.APP_TOOLS}.items()
     ]
 
 
+def _client_capability_telemetry(context: ServerRequestContext[Any, Request]) -> dict[str, Any]:
+    client_params = context.session.client_params
+    client_info = client_params.client_info if client_params is not None else None
+    capabilities = context.session.client_capabilities
+    capability_names: list[str] = []
+    extension_names: list[str] = []
+    if capabilities is not None:
+        capability_names = sorted(
+            name
+            for name in capabilities.__class__.model_fields
+            if name != "extensions" and getattr(capabilities, name, None) is not None
+        )
+        extension_names = sorted((capabilities.extensions or {}).keys())
+    return {
+        "event": "mcp_client_capabilities",
+        "protocol_version": context.protocol_version,
+        "client_name": client_info.name if client_info is not None else None,
+        "client_version": client_info.version if client_info is not None else None,
+        "capabilities": capability_names,
+        "extensions": extension_names,
+    }
+
+
+def _log_client_capabilities(context: ServerRequestContext[Any, Request]) -> None:
+    # Deliberately excludes request arguments, identity headers, and tool names:
+    # this log exists only to show which optional MCP features clients advertise.
+    logger.info(
+        "mcp_client_capabilities %s",
+        json.dumps(_client_capability_telemetry(context), sort_keys=True),
+    )
+
+
 async def _list_tools(
-    _context: ServerRequestContext[Any, Request],
+    context: ServerRequestContext[Any, Request],
     _params: types.PaginatedRequestParams | None,
 ) -> types.ListToolsResult:
+    _log_client_capabilities(context)
     return types.ListToolsResult(tools=_tool_descriptors())
 
 
 def _invoke_tool(name: str, arguments: dict[str, Any], headers: Any) -> tuple[Any, bool]:
-    spec = health.TOOLS.get(name)
+    spec = health.TOOLS.get(name) or mcp_apps.APP_TOOLS.get(name)
     if spec is None:
         return {"error": f"Unknown tool: {name}"}, True
 
@@ -65,6 +108,7 @@ async def _call_tool(
     context: ServerRequestContext[Any, Request],
     params: types.CallToolRequestParams,
 ) -> types.CallToolResult:
+    _log_client_capabilities(context)
     headers = context.request.headers if context.request is not None else {}
     result, is_error = await anyio.to_thread.run_sync(
         _invoke_tool,
@@ -80,6 +124,22 @@ async def _call_tool(
     )
 
 
+async def _list_resources(
+    context: ServerRequestContext[Any, Request],
+    _params: types.PaginatedRequestParams | None,
+) -> types.ListResourcesResult:
+    _log_client_capabilities(context)
+    return types.ListResourcesResult(resources=mcp_apps.resources())
+
+
+async def _read_resource(
+    context: ServerRequestContext[Any, Request],
+    params: types.ReadResourceRequestParams,
+) -> types.ReadResourceResult:
+    _log_client_capabilities(context)
+    return mcp_apps.read_resource(str(params.uri))
+
+
 mcp_server = Server(
     name="health-mcp",
     version=health.Config.version,
@@ -90,6 +150,8 @@ mcp_server = Server(
     lifespan=_lifespan,
     on_list_tools=_list_tools,
     on_call_tool=_call_tool,
+    on_list_resources=_list_resources,
+    on_read_resource=_read_resource,
 )
 
 
@@ -103,7 +165,8 @@ async def _version(_request: Request) -> Response:
             "service": "health-mcp",
             "version": health.Config.version,
             "everday_base_url": health.Config.everday_base_url,
-            "tools": sorted(health.TOOLS.keys()),
+            "tools": sorted({*health.TOOLS, *mcp_apps.APP_TOOLS}),
+            "resources": sorted(mcp_apps.RESOURCE_DESCRIPTIONS),
         }
     )
 

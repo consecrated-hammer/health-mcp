@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import call, patch
 
 from cryptography.fernet import Fernet
+from jsonschema import validate
 
 
 os.environ.setdefault("HEALTH_MCP_EVERDAY_BASE_URL", "http://everday.test")
@@ -13,6 +14,7 @@ os.environ.setdefault("HEALTH_MCP_ENCRYPTION_KEY", Fernet.generate_key().decode(
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app  # noqa: E402
+from output_schemas import OUTPUT_SCHEMAS  # noqa: E402
 
 
 class SymptomTrackingToolTests(unittest.TestCase):
@@ -24,8 +26,17 @@ class SymptomTrackingToolTests(unittest.TestCase):
         responses = [
             {"ReminderTimeZone": "Australia/Adelaide"},
             {"ReminderTimeZone": "Australia/Adelaide"},
-            {"HeadacheEventId": "headache-id", "EventType": "headache"},
-            {"MedicationDoseId": "dose-id", "MedicationName": "Panadol", "Dose": "2 tablets"},
+            {
+                "HeadacheEventId": "headache-id",
+                "LogDate": "2026-08-10",
+                "EventType": "headache",
+            },
+            {
+                "MedicationDoseId": "dose-id",
+                "LogDate": "2026-08-10",
+                "MedicationName": "Panadol",
+                "Dose": "2 tablets",
+            },
         ]
         arguments = {
             "idempotency_key": "2026-08-10-afternoon-headache",
@@ -46,6 +57,7 @@ class SymptomTrackingToolTests(unittest.TestCase):
             result = app._tool_log_headache(arguments, {})
 
         self.assertEqual(result["MedicationDose"]["Dose"], "2 tablets")
+        validate(result, OUTPUT_SCHEMAS["log_headache"])
         headache_payload = request.call_args_list[2].kwargs["payload"]
         medication_payload = request.call_args_list[3].kwargs["payload"]
         self.assertEqual(headache_payload["EventType"], "headache")
@@ -188,7 +200,11 @@ class SymptomTrackingToolTests(unittest.TestCase):
         with (
             patch.object(app, "_require_principal", return_value=self.principal),
             patch.object(app, "_refresh_access_for_principal", return_value=("access-token", self.account)),
-            patch.object(app, "_http_json", side_effect=[[{"HeadacheEventId": "h1"}], [{"MedicationDoseId": "m1"}]]) as request,
+            patch.object(
+                app,
+                "_http_json",
+                side_effect=[[{"HeadacheEventId": "h1"}], [{"MedicationDoseId": "m1"}]],
+            ) as request,
         ):
             headaches = app._tool_get_headaches({"date": "2026-08-10"}, {})
             medications = app._tool_get_medication_doses({}, {})

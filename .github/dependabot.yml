@@ -1,6 +1,17 @@
 version: 2
 
 updates:
+  - package-ecosystem: "npm"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+      day: "saturday"
+      time: "06:00"
+      timezone: "Australia/Adelaide"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+
   - package-ecosystem: "pip"
     directory: "/"
     schedule:

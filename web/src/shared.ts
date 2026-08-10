@@ -1,0 +1,63 @@
+import { App } from "@modelcontextprotocol/ext-apps";
+
+export type UnknownRecord = Record<string, unknown>;
+export type ToolResult = {
+  structuredContent?: unknown;
+  content?: Array<{ type?: string; text?: string }>;
+  isError?: boolean;
+};
+
+export function asRecord(value: unknown): UnknownRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as UnknownRecord)
+    : {};
+}
+
+export function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+export function asNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export function asString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function element<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  className?: string,
+  text?: string,
+): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+export function toolError(result: ToolResult): string {
+  const text = result.content?.find((item) => item.type === "text")?.text;
+  if (!text) return "The health tool could not complete this request.";
+  try {
+    const parsed = JSON.parse(text) as { error?: unknown };
+    return asString(parsed.error) ?? text;
+  } catch {
+    return text;
+  }
+}
+
+export function connectApp(
+  name: string,
+  onResult: (result: ToolResult, app: App) => void,
+): void {
+  const app = new App({ name, version: "1.0.0" }, {}, { autoResize: true });
+  app.addEventListener("toolresult", (result) => onResult(result as ToolResult, app));
+  void app.connect().catch((error: unknown) => {
+    const root = document.querySelector<HTMLElement>("#app");
+    if (!root) return;
+    root.replaceChildren(
+      element("div", "error", error instanceof Error ? error.message : "Unable to connect to ChatGPT."),
+    );
+  });
+}

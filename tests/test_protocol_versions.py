@@ -3,13 +3,15 @@ import json
 import os
 import sys
 import unittest
+from datetime import datetime, timezone
 from email.message import Message
 from importlib.metadata import version
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import anyio
 from cryptography.fernet import Fernet
+from jsonschema import Draft202012Validator, ValidationError, validate
 from mcp import Client
 
 
@@ -18,10 +20,12 @@ os.environ.setdefault("HEALTH_MCP_ENCRYPTION_KEY", Fernet.generate_key().decode(
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app as health  # noqa: E402
+import mcp_apps  # noqa: E402
+from output_schemas import OUTPUT_SCHEMAS  # noqa: E402
 import server  # noqa: E402
 
 
-EXPECTED_TOOL_CONTRACT_SHA256 = "582724d6611b7aff72d6a39e3d903ad7f6176878c2f37fbdae9af68da0c6b24c"
+EXPECTED_TOOL_CONTRACT_SHA256 = "50b540f2b1993512d1adb0603c98d2ecf5ccda1d1f09c7afea0777f80cec52a1"
 
 
 def _headers(**values: str) -> Message:
@@ -37,7 +41,9 @@ def _contract_payload(tools: list) -> list[dict]:
             "name": tool.name,
             "description": tool.description,
             "inputSchema": tool.input_schema,
+            "outputSchema": tool.output_schema,
             "annotations": tool.annotations.model_dump(by_alias=True, exclude_none=True),
+            "meta": tool.meta,
         }
         for tool in tools
     ]
@@ -56,21 +62,138 @@ class SDKMigrationTests(unittest.TestCase):
         protocol_version, tools = anyio.run(exercise)
 
         self.assertEqual(protocol_version, "2026-07-28")
-        self.assertEqual(len(tools), 62)
+        self.assertEqual(len(tools), 64)
         payload = _contract_payload(tools)
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         self.assertEqual(hashlib.sha256(encoded).hexdigest(), EXPECTED_TOOL_CONTRACT_SHA256)
 
     def test_legacy_client_remains_supported_by_the_sdk(self) -> None:
-        async def exercise() -> tuple[str | None, int]:
+        async def exercise() -> tuple[str | None, list]:
             async with Client(server.mcp_server, mode="legacy") as client:
                 listed = await client.list_tools()
-                return client.protocol_version, len(listed.tools)
+                return client.protocol_version, listed.tools
 
-        protocol_version, tool_count = anyio.run(exercise)
+        protocol_version, tools = anyio.run(exercise)
 
         self.assertEqual(protocol_version, "2025-11-25")
-        self.assertEqual(tool_count, 62)
+        self.assertEqual(len(tools), 64)
+        self.assertTrue(all(tool.output_schema is not None for tool in tools))
+
+    def test_every_tool_declares_a_valid_output_schema(self) -> None:
+        self.assertEqual(set(OUTPUT_SCHEMAS), set(health.TOOLS))
+        for name, schema in OUTPUT_SCHEMAS.items():
+            with self.subTest(tool=name):
+                Draft202012Validator.check_schema(schema)
+                self.assertEqual(schema["type"], "object")
+                self.assertIn("TaskAwareness", schema["properties"])
+                self.assertIn("AgentNotice", schema["properties"])
+
+        all_output_schemas = {**OUTPUT_SCHEMAS, **mcp_apps.APP_OUTPUT_SCHEMAS}
+        descriptors = server._tool_descriptors()
+        self.assertTrue(all(tool.output_schema == all_output_schemas[tool.name] for tool in descriptors))
+
+    def test_app_tools_expose_versioned_ui_metadata_and_resources(self) -> None:
+        descriptors = {tool.name: tool for tool in server._tool_descriptors()}
+        for name, uri in {
+            "show_today_health": mcp_apps.TODAY_RESOURCE_URI,
+            "prepare_health_checkin": mcp_apps.CHECKIN_RESOURCE_URI,
+        }.items():
+            with self.subTest(tool=name):
+                meta = descriptors[name].meta or {}
+                self.assertEqual(meta["ui"]["resourceUri"], uri)
+                self.assertEqual(meta["ui"]["visibility"], ["model", "app"])
+                self.assertEqual(meta["openai/outputTemplate"], uri)
+
+        async def exercise() -> tuple[list, str, dict]:
+            async with Client(server.mcp_server, mode="auto") as client:
+                listed = await client.list_resources()
+                read = await client.read_resource(mcp_apps.CHECKIN_RESOURCE_URI)
+                content = read.contents[0]
+                return listed.resources, content.text, content.meta or {}
+
+        resources, html, meta = anyio.run(exercise)
+        self.assertEqual({str(item.uri) for item in resources}, set(mcp_apps.RESOURCE_DESCRIPTIONS))
+        self.assertIn("<main id=\"app\"", html)
+        self.assertIn("Health Check-in", html)
+        self.assertEqual(meta["ui"]["csp"], {"connectDomains": [], "resourceDomains": []})
+
+    def test_app_handlers_use_authoritative_health_tools_without_writing_drafts(self) -> None:
+        summary = {
+            "Workouts": [],
+            "Entries": [],
+            "Totals": {},
+            "Summary": {"LogDate": "2026-08-11"},
+            "Targets": {},
+        }
+        with (
+            patch.object(
+                health,
+                "_tool_get_connection_context",
+                return_value={"ReminderTimeZone": "Australia/Adelaide"},
+            ),
+            patch.object(
+                health,
+                "_utc_now",
+                return_value=datetime(2026, 8, 10, 15, 0, tzinfo=timezone.utc),
+            ),
+            patch.object(health, "_tool_get_today_summary", return_value=summary) as get_summary,
+        ):
+            result = mcp_apps.APP_TOOLS["show_today_health"]["handler"]({}, _headers())
+        self.assertEqual(result, summary)
+        get_summary.assert_called_once_with({"date": "2026-08-11"}, ANY)
+
+        with patch.object(
+            health,
+            "_tool_get_connection_context",
+            return_value={"ReminderTimeZone": "Australia/Adelaide"},
+        ), patch.object(
+            health,
+            "_utc_now",
+            return_value=datetime(2026, 8, 10, 15, 0, tzinfo=timezone.utc),
+        ):
+            draft = mcp_apps.APP_TOOLS["prepare_health_checkin"]["handler"](
+                {"record_type": "headache", "medication_name": "Panadol", "medication_dose": "2 tablets"},
+                _headers(),
+            )
+        validate(draft, mcp_apps.CHECKIN_OUTPUT_SCHEMA)
+        self.assertEqual(draft["Draft"]["date"], "2026-08-11")
+        self.assertEqual(draft["Draft"]["timezone"], "Australia/Adelaide")
+        self.assertIsNone(draft["Draft"]["severity"])
+        self.assertEqual(draft["Draft"]["medication_dose"], "2 tablets")
+        self.assertTrue(draft["Draft"]["idempotency_key"].startswith("health-checkin-"))
+
+    def test_output_schema_validates_stable_fields_and_optional_awareness(self) -> None:
+        result = {
+            "Headache": {
+                "HeadacheEventId": "headache-id",
+                "LogDate": "2026-08-11",
+                "EventType": "headache",
+            },
+            "MedicationDose": None,
+            "TaskAwareness": {"AgentNotice": "A task is due."},
+            "AgentNotice": "A task is due.",
+        }
+
+        validate(result, OUTPUT_SCHEMAS["log_headache"])
+        with self.assertRaises(ValidationError):
+            validate({"MedicationDose": None}, OUTPUT_SCHEMAS["log_headache"])
+
+    def test_client_capability_log_contains_only_protocol_metadata(self) -> None:
+        async def exercise() -> None:
+            async with Client(server.mcp_server, mode="auto") as client:
+                await client.list_tools()
+
+        with self.assertLogs("uvicorn.error", level="INFO") as captured:
+            anyio.run(exercise)
+
+        entry = next(line for line in captured.output if "mcp_client_capabilities" in line)
+        payload = json.loads(entry.split("mcp_client_capabilities ", 1)[1])
+        self.assertEqual(payload["event"], "mcp_client_capabilities")
+        self.assertEqual(payload["protocol_version"], "2026-07-28")
+        self.assertEqual(
+            set(payload),
+            {"event", "protocol_version", "client_name", "client_version", "capabilities", "extensions"},
+        )
 
     def test_public_and_mcp_routes_are_composed_once(self) -> None:
         paths = [route.path for route in server.app.routes]
@@ -135,6 +258,16 @@ class SDKMigrationTests(unittest.TestCase):
 
         self.assertTrue(is_error)
         self.assertEqual(result, {"error": "Unknown tool: not-a-tool"})
+
+    def test_sdk_tool_call_returns_structured_error_content(self) -> None:
+        async def exercise():
+            async with Client(server.mcp_server, mode="auto") as client:
+                return await client.call_tool("not-a-tool", {})
+
+        result = anyio.run(exercise)
+
+        self.assertTrue(result.is_error)
+        self.assertEqual(result.structured_content, {"error": "Unknown tool: not-a-tool"})
 
 
 if __name__ == "__main__":
