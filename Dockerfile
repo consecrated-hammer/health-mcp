@@ -7,7 +7,7 @@ COPY web/ ./
 RUN npm run typecheck && npm run build
 
 
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 ENV PYTHONUNBUFFERED=1
 ENV HOME=/data
