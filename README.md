@@ -2,7 +2,7 @@
 
 `health-mcp` is a small MCP-facing bridge for Everday health data.
 
-It stores linked-account state locally, talks to an Everday backend over HTTP, and exposes read/write health tools for meal logs, workouts, measurements, insights, goals and targets, history, recipe and product reviews, experiments, and weekly review workflows.
+It stores linked-account state locally, talks to an Everday backend over HTTP, and exposes read/write health tools for meal logs, workouts, headaches, medication doses, measurements, insights, goals and targets, history, recipe and product reviews, experiments, and weekly review workflows.
 
 Recipe and product reviews are full read/add/edit tools: `upsert_recipe_review` and `upsert_product_review` create a new review or update an existing one (pass the review's id to update), and `get_recipe_reviews` / `get_recipe_stats` / `get_product_reviews` read them back.
 
@@ -13,6 +13,7 @@ Recipe and product reviews are full read/add/edit tools: `upsert_recipe_review` 
 - Serves MCP-compatible health tools over HTTP
 - Reads active health goals through `get_goals`, previews recommendations through `preview_goal_recommendation`, and creates or replaces outcome goals through `set_goal` without changing active targets
 - Updates current calorie, macro, step, and sodium targets through `update_targets`
+- Logs idempotent headache events and medication doses, including an optional medication dose linked to a headache
 - Adds task awareness after successful Health MCP reads and writes: all overdue Health tasks plus tasks due in the next two hours
 - Flags a missing weigh-in to the agent when the latest logged weight is eight or more days old
 - Surfaces a newly flagged resting-heart-rate reading once to the agent, with the reading's date and contextual reminder
@@ -34,7 +35,7 @@ revision instead of being negotiated down.
 
 Health MCP does not maintain its own protocol negotiation, JSON-RPC dispatch,
 header validation, sessions, or result envelopes. Those are SDK-owned
-contracts. The application owns the 58-tool catalogue, schemas and annotations;
+contracts. The application owns the 62-tool catalogue, schemas and annotations;
 the OAuth gateway owns public authentication and forwards the authenticated
 identity headers consumed by tool handlers.
 

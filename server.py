@@ -84,7 +84,7 @@ mcp_server = Server(
     name="health-mcp",
     version=health.Config.version,
     instructions=(
-        "Health tools for Everday: meal, weight, workout, and daily log reads and writes, "
+        "Health tools for Everday: meal, weight, workout, headache, medication, and daily log reads and writes, "
         "plus Health-linked task management. Most tools require a linked account."
     ),
     lifespan=_lifespan,

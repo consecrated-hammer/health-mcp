@@ -6,6 +6,7 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import date, datetime, timedelta, timezone
 from html import escape
 from typing import Any
@@ -117,6 +118,7 @@ READ_ONLY_TOOLS = {
     "get_history",
     "get_history_type_options",
     "get_history_types",
+    "get_headaches",
     "get_insight_type_options",
     "get_insights",
     "list_health_tasks",
@@ -124,6 +126,7 @@ READ_ONLY_TOOLS = {
     "get_meal_slots",
     "get_meal_type_options",
     "get_measurements",
+    "get_medication_doses",
     "get_product_reviews",
     "get_recipe_reviews",
     "get_recipe_stats",
@@ -148,6 +151,8 @@ DESTRUCTIVE_TOOLS = {
 }
 
 IDEMPOTENT_WRITE_TOOLS = {
+    "log_headache",
+    "log_medication_dose",
     "update_daily_log",
     "update_meal",
     "update_targets",
@@ -1252,6 +1257,189 @@ def _tool_log_weight(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
     )
 
 
+def _stable_health_event_id(
+    principal: dict[str, str | None],
+    account: sqlite3.Row | dict[str, Any],
+    event_kind: str,
+    idempotency_key: str,
+) -> str:
+    key = idempotency_key.strip()
+    if not key:
+        raise ValueError("idempotency_key is required.")
+    identity = f"{Config.provider}:{principal['subject']}:{account['everday_user_id']}:{event_kind}:{key}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"health-mcp:{identity}"))
+
+
+def _event_date_and_time(
+    arguments: dict[str, Any],
+    timestamp_field: str,
+    access_token: str,
+    *,
+    error_field: str | None = None,
+) -> tuple[str, str | None]:
+    date_value = str(arguments.get("date") or "").strip()
+    timestamp = str(arguments.get(timestamp_field) or "").strip()
+    if timestamp:
+        try:
+            parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(f"{error_field or timestamp_field} must be an ISO 8601 datetime.") from exc
+        timestamp_date = parsed.date()
+        if parsed.tzinfo is not None:
+            context = _http_json(
+                "GET",
+                "/api/integrations/health-mcp/context",
+                headers=_authorized_headers(access_token),
+            )
+            reminder_timezone = str(context.get("ReminderTimeZone") or "UTC")
+            timestamp_date = parsed.astimezone(_task_timezone(reminder_timezone, "UTC")).date()
+        if date_value:
+            try:
+                explicit_date = date.fromisoformat(date_value)
+            except ValueError as exc:
+                raise ValueError("date must be a YYYY-MM-DD date.") from exc
+            if explicit_date != timestamp_date:
+                raise ValueError(
+                    f"date must match {error_field or timestamp_field} in the linked user's timezone."
+                )
+        else:
+            date_value = timestamp_date.isoformat()
+        return date_value, timestamp
+    if date_value:
+        return date_value, None
+
+    context = _http_json(
+        "GET",
+        "/api/integrations/health-mcp/context",
+        headers=_authorized_headers(access_token),
+    )
+    reminder_timezone = str(context.get("ReminderTimeZone") or "UTC")
+    local_now = _utc_now().astimezone(_task_timezone(reminder_timezone, "UTC"))
+    return local_now.date().isoformat(), local_now.isoformat()
+
+
+def _tool_log_headache(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, account = _refresh_access_for_principal(principal)
+    idempotency_key = str(arguments.get("idempotency_key") or "").strip()
+    headache_event_id = _stable_health_event_id(principal, account, "headache", idempotency_key)
+    log_date, onset_at = _event_date_and_time(arguments, "onset_at", access_token)
+    medication_name = str(arguments.get("medication_name") or "").strip()
+    medication_fields_present = any(
+        arguments.get(field) is not None
+        for field in ("medication_dose", "medication_taken_at", "medication_notes")
+    )
+    if medication_fields_present and not medication_name:
+        raise ValueError("medication_name is required when medication details are provided.")
+    medication_log_date: str | None = None
+    taken_at: str | None = None
+    if medication_name:
+        medication_taken_at = str(arguments.get("medication_taken_at") or "").strip()
+        if medication_taken_at:
+            medication_log_date, taken_at = _event_date_and_time(
+                {"taken_at": medication_taken_at},
+                "taken_at",
+                access_token,
+                error_field="medication_taken_at",
+            )
+        else:
+            medication_log_date, taken_at = log_date, onset_at
+
+    headache = _http_json(
+        "POST",
+        "/api/integrations/health-mcp/headaches",
+        payload={
+            "HeadacheEventId": headache_event_id,
+            "LogDate": log_date,
+            "OnsetAt": onset_at,
+            "EventType": "headache",
+            "Severity": arguments.get("severity"),
+            "Location": arguments.get("location"),
+            "ContextNotes": arguments.get("notes"),
+        },
+        headers=_authorized_headers(access_token),
+    )
+
+    if not medication_name:
+        return {"Headache": headache, "MedicationDose": None}
+
+    medication_dose_id = _stable_health_event_id(principal, account, "headache-medication", idempotency_key)
+    medication = _http_json(
+        "POST",
+        "/api/integrations/health-mcp/medication-doses",
+        payload={
+            "MedicationDoseId": medication_dose_id,
+            "LogDate": medication_log_date,
+            "HeadacheEventId": headache_event_id,
+            "TakenAt": taken_at,
+            "MedicationName": medication_name,
+            "Dose": arguments.get("medication_dose"),
+            "Notes": arguments.get("medication_notes"),
+        },
+        headers=_authorized_headers(access_token),
+    )
+    return {"Headache": headache, "MedicationDose": medication}
+
+
+def _tool_log_medication_dose(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, account = _refresh_access_for_principal(principal)
+    medication_name = str(arguments.get("medication_name") or "").strip()
+    if not medication_name:
+        raise ValueError("medication_name is required.")
+    medication_dose_id = _stable_health_event_id(
+        principal,
+        account,
+        "medication",
+        str(arguments.get("idempotency_key") or ""),
+    )
+    log_date, taken_at = _event_date_and_time(arguments, "taken_at", access_token)
+    return _http_json(
+        "POST",
+        "/api/integrations/health-mcp/medication-doses",
+        payload={
+            "MedicationDoseId": medication_dose_id,
+            "LogDate": log_date,
+            "HeadacheEventId": arguments.get("headache_event_id"),
+            "TakenAt": taken_at,
+            "MedicationName": medication_name,
+            "Dose": arguments.get("dose"),
+            "Notes": arguments.get("notes"),
+        },
+        headers=_authorized_headers(access_token),
+    )
+
+
+def _tool_get_headaches(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    params = {}
+    if arguments.get("date"):
+        params["log_date"] = str(arguments["date"])
+    suffix = f"?{urllib.parse.urlencode(params)}" if params else ""
+    items = _http_json(
+        "GET",
+        f"/api/integrations/health-mcp/headaches{suffix}",
+        headers=_authorized_headers(access_token),
+    )
+    return {"Items": items}
+
+
+def _tool_get_medication_doses(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    principal = _require_principal(headers)
+    access_token, _account = _refresh_access_for_principal(principal)
+    params = {}
+    if arguments.get("date"):
+        params["log_date"] = str(arguments["date"])
+    suffix = f"?{urllib.parse.urlencode(params)}" if params else ""
+    items = _http_json(
+        "GET",
+        f"/api/integrations/health-mcp/medication-doses{suffix}",
+        headers=_authorized_headers(access_token),
+    )
+    return {"Items": items}
+
+
 def _tool_update_daily_log(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
     principal = _require_principal(headers)
     access_token, _account = _refresh_access_for_principal(principal)
@@ -2251,6 +2439,85 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
         "handler": _tool_log_weight,
+    },
+    "log_headache": {
+        "description": "Log or update a headache, optionally with a linked medication dose. Reuse the same idempotency_key when retrying. Do not infer medication strength or dose details the user did not provide.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "idempotency_key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "A stable unique key for this real-world event. Reuse it for retries so the event is not duplicated.",
+                },
+                "date": {"type": "string", "description": "YYYY-MM-DD. Defaults to today in the linked user's timezone."},
+                "onset_at": {"type": "string", "description": "ISO 8601 onset datetime. Defaults to now when date is omitted."},
+                "severity": {"type": "integer", "minimum": 1, "maximum": 10},
+                "location": {"type": "string", "maxLength": 200},
+                "notes": {"type": "string"},
+                "medication_name": {"type": "string", "minLength": 1, "maxLength": 200},
+                "medication_dose": {
+                    "type": "string",
+                    "maxLength": 120,
+                    "description": "User-stated dose, for example '2 tablets'. Do not infer strength or milligrams.",
+                },
+                "medication_taken_at": {"type": "string", "description": "ISO 8601 datetime. Defaults to the headache onset time."},
+                "medication_notes": {"type": "string"},
+            },
+            "required": ["idempotency_key"],
+            "additionalProperties": False,
+        },
+        "handler": _tool_log_headache,
+    },
+    "log_medication_dose": {
+        "description": "Log or update a standalone medication dose. Reuse the same idempotency_key when retrying. Record only the dose and strength the user explicitly states.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "idempotency_key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "A stable unique key for this real-world dose. Reuse it for retries so the dose is not duplicated.",
+                },
+                "medication_name": {"type": "string", "minLength": 1, "maxLength": 200},
+                "dose": {
+                    "type": "string",
+                    "maxLength": 120,
+                    "description": "User-stated dose, for example '2 tablets'. Do not infer strength or milligrams.",
+                },
+                "date": {"type": "string", "description": "YYYY-MM-DD. Defaults to today in the linked user's timezone."},
+                "taken_at": {"type": "string", "description": "ISO 8601 datetime. Defaults to now when date is omitted."},
+                "headache_event_id": {"type": "string", "description": "Optional existing HeadacheEventId to associate with this dose."},
+                "notes": {"type": "string"},
+            },
+            "required": ["idempotency_key", "medication_name"],
+            "additionalProperties": False,
+        },
+        "handler": _tool_log_medication_dose,
+    },
+    "get_headaches": {
+        "description": "Return recorded headache events, optionally filtered to one date.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "Optional YYYY-MM-DD filter."},
+            },
+            "additionalProperties": False,
+        },
+        "handler": _tool_get_headaches,
+    },
+    "get_medication_doses": {
+        "description": "Return recorded medication doses, optionally filtered to one date.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "Optional YYYY-MM-DD filter."},
+            },
+            "additionalProperties": False,
+        },
+        "handler": _tool_get_medication_doses,
     },
     "update_daily_log": {
         "description": "Update non-meal daily log fields such as water, sleep, work location, period, adherence, or notes for one date.",

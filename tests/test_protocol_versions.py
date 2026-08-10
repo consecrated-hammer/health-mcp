@@ -21,7 +21,7 @@ import app as health  # noqa: E402
 import server  # noqa: E402
 
 
-EXPECTED_TOOL_CONTRACT_SHA256 = "e506e4ecbfe246e1584bb5c04f7d88c41ed8f8532f038c1a50623a2dcf9156e6"
+EXPECTED_TOOL_CONTRACT_SHA256 = "50d6a542309374a6afab393d781675a8060277bbc881230cb7a19cd23dc266d9"
 
 
 def _headers(**values: str) -> Message:
@@ -56,7 +56,7 @@ class SDKMigrationTests(unittest.TestCase):
         protocol_version, tools = anyio.run(exercise)
 
         self.assertEqual(protocol_version, "2026-07-28")
-        self.assertEqual(len(tools), 58)
+        self.assertEqual(len(tools), 62)
         payload = _contract_payload(tools)
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         self.assertEqual(hashlib.sha256(encoded).hexdigest(), EXPECTED_TOOL_CONTRACT_SHA256)
@@ -70,7 +70,7 @@ class SDKMigrationTests(unittest.TestCase):
         protocol_version, tool_count = anyio.run(exercise)
 
         self.assertEqual(protocol_version, "2025-11-25")
-        self.assertEqual(tool_count, 58)
+        self.assertEqual(tool_count, 62)
 
     def test_public_and_mcp_routes_are_composed_once(self) -> None:
         paths = [route.path for route in server.app.routes]
