@@ -14,6 +14,7 @@ os.environ.setdefault("HEALTH_MCP_ENCRYPTION_KEY", Fernet.generate_key().decode(
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app  # noqa: E402
+import server  # noqa: E402
 
 
 class UpdateTargetsToolTests(unittest.TestCase):
@@ -151,14 +152,11 @@ class TaskAwarenessTests(unittest.TestCase):
                     "AgentNotice": "Overdue health tasks: Put water at desk (due 08:30)",
                 },
             ):
-                response = app._handle_jsonrpc(
-                    {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "log_weight", "arguments": {}}},
-                    {},
-                )
+                content, is_error = server._invoke_tool("log_weight", {}, {})
         finally:
             app.TOOLS["log_weight"] = original
 
-        content = response["result"]["structuredContent"]
+        self.assertFalse(is_error)
         self.assertEqual(content["TaskAwareness"]["Overdue"][0]["Title"], "Put water at desk")
         self.assertIn("Put water at desk", content["AgentNotice"])
 

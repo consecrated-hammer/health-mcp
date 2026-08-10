@@ -1,0 +1,322 @@
+import json
+import urllib.parse
+from contextlib import asynccontextmanager
+from typing import Any
+
+import anyio
+import uvicorn
+from mcp import types
+from mcp.server.lowlevel.server import Server, ServerRequestContext
+from starlette.requests import Request
+from starlette.responses import JSONResponse, PlainTextResponse, Response
+from starlette.routing import Route
+
+import app as health
+
+
+@asynccontextmanager
+async def _lifespan(_server: Server):
+    health._init_db()
+    yield None
+
+
+def _tool_descriptors() -> list[types.Tool]:
+    return [
+        types.Tool(
+            name=name,
+            description=spec["description"],
+            inputSchema=spec["inputSchema"],
+            annotations=types.ToolAnnotations.model_validate(
+                spec.get("annotations") or health._tool_annotations(name)
+            ),
+        )
+        for name, spec in health.TOOLS.items()
+    ]
+
+
+async def _list_tools(
+    _context: ServerRequestContext[Any, Request],
+    _params: types.PaginatedRequestParams | None,
+) -> types.ListToolsResult:
+    return types.ListToolsResult(tools=_tool_descriptors())
+
+
+def _invoke_tool(name: str, arguments: dict[str, Any], headers: Any) -> tuple[Any, bool]:
+    spec = health.TOOLS.get(name)
+    if spec is None:
+        return {"error": f"Unknown tool: {name}"}, True
+
+    try:
+        result = spec["handler"](arguments, headers)
+        if isinstance(result, dict):
+            awareness = health._task_awareness(headers)
+            if awareness is not None:
+                result["TaskAwareness"] = awareness
+                if awareness["AgentNotice"]:
+                    result["AgentNotice"] = awareness["AgentNotice"]
+        return result, False
+    except (ValueError, RuntimeError) as exc:
+        return {"error": str(exc)}, True
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"Unhandled tool failure: {exc}"}, True
+
+
+async def _call_tool(
+    context: ServerRequestContext[Any, Request],
+    params: types.CallToolRequestParams,
+) -> types.CallToolResult:
+    headers = context.request.headers if context.request is not None else {}
+    result, is_error = await anyio.to_thread.run_sync(
+        _invoke_tool,
+        params.name,
+        params.arguments or {},
+        headers,
+    )
+    text = json.dumps(result, ensure_ascii=True, indent=2, default=str)
+    return types.CallToolResult(
+        content=[types.TextContent(type="text", text=text)],
+        structuredContent=result,
+        isError=is_error,
+    )
+
+
+mcp_server = Server(
+    name="health-mcp",
+    version=health.Config.version,
+    instructions=(
+        "Health tools for Everday: meal, weight, workout, and daily log reads and writes, "
+        "plus Health-linked task management. Most tools require a linked account."
+    ),
+    lifespan=_lifespan,
+    on_list_tools=_list_tools,
+    on_call_tool=_call_tool,
+)
+
+
+async def _healthz(_request: Request) -> Response:
+    return PlainTextResponse("ok\n")
+
+
+async def _version(_request: Request) -> Response:
+    return JSONResponse(
+        {
+            "service": "health-mcp",
+            "version": health.Config.version,
+            "everday_base_url": health.Config.everday_base_url,
+            "tools": sorted(health.TOOLS.keys()),
+        }
+    )
+
+
+async def _root(_request: Request) -> Response:
+    return JSONResponse({"service": "health-mcp", "version": health.Config.version})
+
+
+def _link_error(status: int, message: str) -> Response:
+    fake_session = {
+        "external_name": None,
+        "external_email": None,
+        "external_subject": "this account",
+        "expires_at": "",
+        "status": "error",
+        "last_error": message,
+        "everday_username": None,
+        "everday_user_id": None,
+    }
+    return Response(
+        health._render_link_page(session=fake_session),  # type: ignore[arg-type]
+        status_code=status,
+        media_type="text/html",
+    )
+
+
+async def _link(request: Request) -> Response:
+    session_token = request.path_params["session_token"].strip("/")
+    if not session_token:
+        return _link_error(404, "This account-link session does not exist.")
+    if request.method == "GET":
+        return await anyio.to_thread.run_sync(_link_get, session_token)
+    try:
+        content_length = int(request.headers.get("Content-Length", "0") or "0")
+    except (TypeError, ValueError):
+        content_length = 0
+    if content_length <= 0 or content_length > 16384:
+        return await anyio.to_thread.run_sync(_link_post, session_token, b"")
+    raw = await request.body()
+    return await anyio.to_thread.run_sync(_link_post, session_token, raw)
+
+
+def _link_get(session_token: str) -> Response:
+    session = health._load_link_session(session_token)
+    if session is None:
+        return _link_error(404, "This account-link session does not exist.")
+    if session["status"] == "pending":
+        try:
+            session = health._active_link_session_or_error(session_token)
+        except ValueError as exc:
+            session = health._load_link_session(session_token) or session
+            return Response(
+                health._render_link_page(session=session, error_message=str(exc)),
+                status_code=410,
+                media_type="text/html",
+            )
+
+    linked_profile = None
+    if session["status"] == "completed":
+        account = health._load_account(session["external_subject"])
+        if account is not None:
+            try:
+                access_token, _ = health._refresh_access_for_principal(
+                    {
+                        "subject": session["external_subject"],
+                        "email": session["external_email"],
+                        "name": session["external_name"],
+                    }
+                )
+                linked_profile = health._everday_profile(access_token)
+            except Exception:  # noqa: BLE001
+                linked_profile = None
+    return Response(
+        health._render_link_page(session=session, linked_profile=linked_profile),
+        media_type="text/html",
+    )
+
+
+def _link_post(session_token: str, raw: bytes) -> Response:
+    try:
+        session = health._active_link_session_or_error(session_token)
+    except ValueError as exc:
+        existing = health._load_link_session(session_token)
+        if existing is None:
+            return _link_error(404, str(exc))
+        return Response(
+            health._render_link_page(session=existing, error_message=str(exc)),
+            status_code=410,
+            media_type="text/html",
+        )
+
+    if not raw or len(raw) > 16384:
+        return Response(
+            health._render_link_page(session=session, error_message="The submitted form was invalid."),
+            status_code=400,
+            media_type="text/html",
+        )
+
+    form = urllib.parse.parse_qs(raw.decode("utf-8", errors="replace"), keep_blank_values=False)
+    username = (form.get("username") or [""])[0].strip()
+    password = (form.get("password") or [""])[0]
+    if not username or not password:
+        return Response(
+            health._render_link_page(
+                session=session,
+                error_message="Everday username and password are required.",
+            ),
+            status_code=400,
+            media_type="text/html",
+        )
+
+    try:
+        login = health._everday_login(username, password)
+        access_token = str(login.get("AccessToken") or "").strip()
+        refresh_token = str(login.get("RefreshToken") or "").strip()
+        if not access_token or not refresh_token:
+            raise RuntimeError("Everday login did not return usable tokens.")
+        profile = health._everday_profile(access_token)
+        everday_user_id = int(profile.get("UserId"))
+        health._save_account(
+            session["external_subject"],
+            session["external_email"],
+            session["external_name"],
+            everday_user_id,
+            username,
+            refresh_token,
+        )
+        health._mark_link_session(
+            session_token,
+            status="completed",
+            everday_user_id=everday_user_id,
+            everday_username=username,
+            completed_at=health._utc_now().isoformat(),
+            last_error=None,
+        )
+        updated = health._load_link_session(session_token) or session
+        return Response(
+            health._render_link_page(session=updated, linked_profile=profile),
+            media_type="text/html",
+        )
+    except (ValueError, RuntimeError) as exc:
+        health._mark_link_session(
+            session_token,
+            status="pending",
+            everday_user_id=session["everday_user_id"],
+            everday_username=session["everday_username"],
+            completed_at=session["completed_at"],
+            last_error=str(exc),
+        )
+        refreshed = health._load_link_session(session_token) or session
+        return Response(
+            health._render_link_page(session=refreshed, error_message=str(exc)),
+            status_code=400,
+            media_type="text/html",
+        )
+
+
+routes = [
+    Route("/healthz", _healthz, methods=["GET"]),
+    Route("/version", _version, methods=["GET"]),
+    Route("/", _root, methods=["GET"]),
+    Route("/link/{session_token:path}", _link, methods=["GET", "POST"]),
+]
+
+sdk_app = mcp_server.streamable_http_app(
+    streamable_http_path="/mcp",
+    json_response=True,
+    stateless_http=True,
+    max_request_body_size=health.Config.max_request_bytes,
+    custom_starlette_routes=routes,
+)
+
+
+class App:
+    """Preserve the pre-SDK MCP preflight contract around the SDK ASGI app."""
+
+    def __init__(self, wrapped: Any):
+        self.wrapped = wrapped
+        self.routes = wrapped.routes
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if (
+            scope["type"] == "http"
+            and scope["method"] == "OPTIONS"
+            and scope["path"] == "/mcp"
+        ):
+            response = Response(status_code=204, headers={"Allow": "POST, OPTIONS"})
+            await response(scope, receive, send)
+            return
+        if (
+            scope["type"] == "http"
+            and scope["method"] == "POST"
+            and scope["path"] == "/mcp"
+            and health.Config.allowed_origins
+        ):
+            headers = {
+                key.decode("latin-1").lower(): value.decode("latin-1")
+                for key, value in scope["headers"]
+            }
+            origin = headers.get("origin", "").strip()
+            if origin and origin not in health.Config.allowed_origins:
+                response = JSONResponse({"error": "forbidden_origin"}, status_code=403)
+                await response(scope, receive, send)
+                return
+        await self.wrapped(scope, receive, send)
+
+
+app = App(sdk_app)
+
+
+def main() -> None:
+    uvicorn.run(app, host=health.Config.host, port=health.Config.port, log_level="info")
+
+
+if __name__ == "__main__":
+    main()

@@ -24,38 +24,29 @@ Recipe and product reviews are full read/add/edit tools: `upsert_recipe_review` 
 
 ## Protocol Versions
 
-The server is **dual-era**: it answers both the legacy `2025-06-18` revision and
-the modern `2026-07-28` revision on the same `/mcp` endpoint.
+The MCP surface runs on the official Python SDK v2 and serves the modern
+`2026-07-28` protocol revision. The SDK also retains its supported 2025-era
+handshake path on the same `/mcp` endpoint so existing ChatGPT and Claude
+connections continue to work while clients adopt the modern stateless
+protocol. A legacy client requesting `2025-06-18` still receives `2025-06-18`;
+the SDK's current legacy client defaults to `2025-11-25` and receives that
+revision instead of being negotiated down.
 
-The era is selected per request. A request carrying
-`_meta["io.modelcontextprotocol/protocolVersion"]` is served as `2026-07-28`;
-anything else falls through to the `initialize` handshake path and is served as
-`2025-06-18`. Legacy responses are unchanged, so existing clients see no
-difference.
+Health MCP does not maintain its own protocol negotiation, JSON-RPC dispatch,
+header validation, sessions, or result envelopes. Those are SDK-owned
+contracts. The application owns the 58-tool catalogue, schemas and annotations;
+the OAuth gateway owns public authentication and forwards the authenticated
+identity headers consumed by tool handlers.
 
-Modern requests are validated as the spec requires:
+The SDK's low-level `Server` is intentional here: Health MCP already has an
+explicit, tested JSON Schema catalogue and uniform `(arguments, headers)` tool
+handlers. This keeps that application contract intact while delegating the wire
+protocol and transport to SDK v2.
 
-- `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` (on `tools/call`) must be
-  present and must match the request body, including after decoding the
-  `=?base64?...?=` sentinel form. Mismatches return `400` with `-32020`.
-- An unsupported version returns `400` with `-32022` and the supported list.
-- A missing `io.modelcontextprotocol/clientCapabilities` returns `400` with `-32602`.
-- An unknown method returns `404` with `-32601`.
-- `GET` and `DELETE` on `/mcp` return `405`; sessions and resumable streams are
-  not part of either era this server speaks.
-
-`server/discover` is implemented. It advertises `2026-07-28` only, and so does
-the `supported` list on a `-32022`: those lists say which versions a client may
-select through per-request `_meta`, and the legacy revision is reachable solely
-through `initialize`. Listing it would invite a downgrade the modern path
-rejects, and on the error would loop a client that retries as the spec directs.
-
-Not implemented: SSE response streams, `subscriptions/listen`, MRTR, and the
-Tasks and MCP Apps extensions. Every tool here answers in a single round trip,
-so nothing currently needs them.
-
-A legacy `initialize` logs the version the client asked for alongside the
-version served, so a client moving to a newer revision is visible in the logs.
+The transport is configured with JSON responses and stateless legacy HTTP.
+Modern `2026-07-28` requests are stateless by definition. The service does not
+currently use MRTR, Tasks, MCP Apps, resources, prompts, or subscription
+notifications.
 
 ## Required Environment
 
@@ -79,9 +70,11 @@ version served, so a client moving to a newer revision is visible in the logs.
 
 ## Files
 
-- `app.py` service implementation
+- `app.py` Health domain, Everday integration, linked-account state, and tool catalogue
+- `server.py` Python SDK v2 MCP transport and public route composition
+- `requirements.txt` pinned runtime dependencies
 - `Dockerfile` container build for deployment
-- `tests/` unit and protocol-conformance tests, run with `unittest`
+- `tests/` domain and SDK contract tests, run with `unittest`
 
 ## Test
 
@@ -92,7 +85,8 @@ in the runtime image, which has what `app.py` imports:
 docker run --rm -v "$PWD":/src -w /src \
   -e HEALTH_MCP_EVERDAY_BASE_URL=http://everday.test \
   -e HEALTH_MCP_STATE_DB_PATH=/tmp/t.sqlite3 \
-  --entrypoint python health-mcp:local -m unittest discover -s tests
+  -e HEALTH_MCP_ENCRYPTION_KEY=MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA= \
+  --entrypoint python health-mcp:local -m unittest discover -s tests -v
 ```
 
 ## Run

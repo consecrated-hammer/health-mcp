@@ -1,280 +1,137 @@
+import hashlib
+import json
 import os
 import sys
 import unittest
 from email.message import Message
+from importlib.metadata import version
 from pathlib import Path
 from unittest.mock import patch
 
+import anyio
 from cryptography.fernet import Fernet
+from mcp import Client
 
 
 os.environ.setdefault("HEALTH_MCP_EVERDAY_BASE_URL", "http://everday.test")
 os.environ.setdefault("HEALTH_MCP_ENCRYPTION_KEY", Fernet.generate_key().decode("utf-8"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import app  # noqa: E402
+import app as health  # noqa: E402
+import server  # noqa: E402
 
 
-MODERN = app.MODERN_PROTOCOL_VERSION
-LEGACY = app.LEGACY_PROTOCOL_VERSION
+EXPECTED_TOOL_CONTRACT_SHA256 = "e506e4ecbfe246e1584bb5c04f7d88c41ed8f8532f038c1a50623a2dcf9156e6"
 
 
 def _headers(**values: str) -> Message:
-    """Builds a case-insensitive header container matching http.server's."""
     message = Message()
     for key, value in values.items():
         message[key.replace("_", "-")] = value
     return message
 
 
-def _meta(version: str = MODERN, *, capabilities: dict | None = {}) -> dict:
-    meta = {app.META_PROTOCOL_VERSION: version}
-    if capabilities is not None:
-        meta[app.META_CLIENT_CAPABILITIES] = capabilities
-    meta[app.META_CLIENT_INFO] = {"name": "TestClient", "version": "1.0.0"}
-    return meta
-
-
-def _modern_request(method: str, params: dict | None = None, request_id: str = "r1") -> dict:
-    body = dict(params or {})
-    body.setdefault("_meta", _meta())
-    return {"jsonrpc": "2.0", "id": request_id, "method": method, "params": body}
-
-
-class EraDetectionTests(unittest.TestCase):
-    def test_legacy_initialize_still_answers_the_legacy_revision(self) -> None:
-        status, response = app._handle_mcp_post(
-            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}, _headers()
-        )
-
-        self.assertEqual(status, 200)
-        self.assertEqual(response["result"]["protocolVersion"], LEGACY)
-        self.assertEqual(response["result"]["serverInfo"]["name"], "health-mcp")
-
-    def test_legacy_tools_list_has_no_modern_envelope(self) -> None:
-        status, response = app._handle_mcp_post(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}, _headers()
-        )
-
-        self.assertEqual(status, 200)
-        self.assertNotIn("resultType", response["result"])
-        self.assertNotIn("_meta", response["result"])
-        self.assertTrue(response["result"]["tools"])
-
-    def test_params_without_protocol_version_route_to_the_legacy_era(self) -> None:
-        # A legacy client may still send _meta (for example progressToken).
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/list",
-            "params": {"_meta": {"progressToken": "abc"}},
+def _contract_payload(tools: list) -> list[dict]:
+    return [
+        {
+            "name": tool.name,
+            "description": tool.description,
+            "inputSchema": tool.input_schema,
+            "annotations": tool.annotations.model_dump(by_alias=True, exclude_none=True),
         }
-
-        self.assertFalse(app._is_modern_request(payload))
-        status, response = app._handle_mcp_post(payload, _headers())
-        self.assertEqual(status, 200)
-        self.assertNotIn("resultType", response["result"])
-
-    def test_per_request_protocol_version_selects_the_modern_era(self) -> None:
-        self.assertTrue(app._is_modern_request(_modern_request("tools/list")))
+        for tool in tools
+    ]
 
 
-class ModernDispatchTests(unittest.TestCase):
-    def test_server_discover_advertises_only_selectable_revisions(self) -> None:
-        status, response = app._handle_mcp_post(
-            _modern_request("server/discover"),
-            _headers(MCP_Protocol_Version=MODERN, Mcp_Method="server/discover"),
-        )
+class SDKMigrationTests(unittest.TestCase):
+    def test_runtime_is_pinned_to_python_sdk_v2(self) -> None:
+        self.assertEqual(version("mcp"), "2.0.0")
 
-        self.assertEqual(status, 200)
-        result = response["result"]
-        self.assertEqual(result["resultType"], "complete")
-        # The legacy revision is reachable only via `initialize`, so advertising
-        # it here would invite a downgrade the modern path rejects.
-        self.assertEqual(result["supportedVersions"], [MODERN])
-        self.assertNotIn(LEGACY, result["supportedVersions"])
-        self.assertEqual(result["capabilities"], {"tools": {}})
-        self.assertEqual(result["_meta"][app.META_SERVER_INFO]["name"], "health-mcp")
+    def test_auto_client_uses_the_modern_protocol_and_preserves_tool_contract(self) -> None:
+        async def exercise() -> tuple[str | None, list]:
+            async with Client(server.mcp_server, mode="auto") as client:
+                listed = await client.list_tools()
+                return client.protocol_version, listed.tools
 
-    def test_modern_tools_list_carries_the_result_envelope(self) -> None:
-        status, response = app._handle_mcp_post(
-            _modern_request("tools/list"),
-            _headers(MCP_Protocol_Version=MODERN, Mcp_Method="tools/list"),
-        )
+        protocol_version, tools = anyio.run(exercise)
 
-        self.assertEqual(status, 200)
-        self.assertEqual(response["result"]["resultType"], "complete")
-        self.assertIn(app.META_SERVER_INFO, response["result"]["_meta"])
-        names = {tool["name"] for tool in response["result"]["tools"]}
-        self.assertIn("get_today_summary", names)
+        self.assertEqual(protocol_version, "2026-07-28")
+        self.assertEqual(len(tools), 58)
+        payload = _contract_payload(tools)
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        self.assertEqual(hashlib.sha256(encoded).hexdigest(), EXPECTED_TOOL_CONTRACT_SHA256)
 
-    def test_modern_tools_call_reaches_the_tool_and_wraps_the_result(self) -> None:
-        fake = {
-            "description": "Test tool",
-            "inputSchema": {"type": "object", "properties": {}},
-            "handler": lambda arguments, headers: {"Ok": True},
-        }
-        with (
-            patch.dict(app.TOOLS, {"fake_tool": fake}),
-            patch.object(app, "_task_awareness", return_value=None),
-        ):
-            status, response = app._handle_mcp_post(
-                _modern_request("tools/call", {"name": "fake_tool", "arguments": {}}),
+    def test_legacy_client_remains_supported_by_the_sdk(self) -> None:
+        async def exercise() -> tuple[str | None, int]:
+            async with Client(server.mcp_server, mode="legacy") as client:
+                listed = await client.list_tools()
+                return client.protocol_version, len(listed.tools)
+
+        protocol_version, tool_count = anyio.run(exercise)
+
+        self.assertEqual(protocol_version, "2025-11-25")
+        self.assertEqual(tool_count, 58)
+
+    def test_public_and_mcp_routes_are_composed_once(self) -> None:
+        paths = [route.path for route in server.app.routes]
+
+        self.assertEqual(paths.count("/mcp"), 1)
+        self.assertEqual(paths.count("/healthz"), 1)
+        self.assertEqual(paths.count("/version"), 1)
+        self.assertEqual(paths.count("/"), 1)
+        self.assertEqual(paths.count("/link/{session_token:path}"), 1)
+
+    def test_configured_origin_allowlist_still_rejects_unknown_origins(self) -> None:
+        async def exercise() -> list[dict]:
+            sent: list[dict] = []
+
+            async def receive() -> dict:
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            async def send(message: dict) -> None:
+                sent.append(message)
+
+            scope = {
+                "type": "http",
+                "http_version": "1.1",
+                "method": "POST",
+                "scheme": "https",
+                "path": "/mcp",
+                "raw_path": b"/mcp",
+                "query_string": b"",
+                "headers": [(b"origin", b"https://unexpected.example")],
+                "client": ("127.0.0.1", 1234),
+                "server": ("health-mcp", 8766),
+            }
+            await server.app(scope, receive, send)
+            return sent
+
+        with patch.object(health.Config, "allowed_origins", frozenset({"https://allowed.example"})):
+            sent = anyio.run(exercise)
+
+        self.assertEqual(sent[0]["status"], 403)
+        self.assertIn(b"forbidden_origin", sent[1]["body"])
+
+    def test_gateway_identity_headers_reach_existing_tool_handlers(self) -> None:
+        with patch.object(health, "_task_awareness", return_value=None):
+            result, is_error = server._invoke_tool(
+                "connection_status",
+                {},
                 _headers(
-                    MCP_Protocol_Version=MODERN,
-                    Mcp_Method="tools/call",
-                    Mcp_Name="fake_tool",
+                    X_Auth_Request_Sub="contract-user",
+                    X_Auth_Request_Email="contract@example.test",
                 ),
             )
 
-        self.assertEqual(status, 200)
-        result = response["result"]
-        self.assertEqual(result["resultType"], "complete")
-        self.assertEqual(result["structuredContent"], {"Ok": True})
+        self.assertFalse(is_error)
+        self.assertEqual(result["external_subject"], "contract-user")
+        self.assertEqual(result["external_email"], "contract@example.test")
 
-    def test_unknown_modern_method_is_404_with_method_not_found(self) -> None:
-        status, response = app._handle_mcp_post(
-            _modern_request("resources/list"),
-            _headers(MCP_Protocol_Version=MODERN, Mcp_Method="resources/list"),
-        )
+    def test_tool_errors_remain_model_visible_call_errors(self) -> None:
+        result, is_error = server._invoke_tool("not-a-tool", {}, _headers())
 
-        self.assertEqual(status, 404)
-        self.assertEqual(response["error"]["code"], app.ERROR_METHOD_NOT_FOUND)
-
-    def test_modern_notification_is_accepted_without_a_body(self) -> None:
-        payload = {"jsonrpc": "2.0", "method": "notifications/x", "params": {"_meta": _meta()}}
-
-        status, response = app._handle_mcp_post(payload, _headers())
-
-        self.assertEqual(status, 202)
-        self.assertIsNone(response)
-
-
-class ModernValidationTests(unittest.TestCase):
-    def test_missing_protocol_version_header_is_a_header_mismatch(self) -> None:
-        status, response = app._handle_mcp_post(
-            _modern_request("tools/list"), _headers(Mcp_Method="tools/list")
-        )
-
-        self.assertEqual(status, 400)
-        self.assertEqual(response["error"]["code"], app.ERROR_HEADER_MISMATCH)
-
-    def test_protocol_version_header_must_match_the_body(self) -> None:
-        status, response = app._handle_mcp_post(
-            _modern_request("tools/list"),
-            _headers(MCP_Protocol_Version=LEGACY, Mcp_Method="tools/list"),
-        )
-
-        self.assertEqual(status, 400)
-        self.assertEqual(response["error"]["code"], app.ERROR_HEADER_MISMATCH)
-
-    def test_method_header_must_match_the_body(self) -> None:
-        status, response = app._handle_mcp_post(
-            _modern_request("tools/list"),
-            _headers(MCP_Protocol_Version=MODERN, Mcp_Method="tools/call"),
-        )
-
-        self.assertEqual(status, 400)
-        self.assertEqual(response["error"]["code"], app.ERROR_HEADER_MISMATCH)
-
-    def test_tools_call_requires_a_matching_name_header(self) -> None:
-        status, response = app._handle_mcp_post(
-            _modern_request("tools/call", {"name": "get_today_summary", "arguments": {}}),
-            _headers(
-                MCP_Protocol_Version=MODERN,
-                Mcp_Method="tools/call",
-                Mcp_Name="log_weight",
-            ),
-        )
-
-        self.assertEqual(status, 400)
-        self.assertEqual(response["error"]["code"], app.ERROR_HEADER_MISMATCH)
-
-    def test_tools_call_rejects_a_missing_name_header(self) -> None:
-        status, response = app._handle_mcp_post(
-            _modern_request("tools/call", {"name": "get_today_summary", "arguments": {}}),
-            _headers(MCP_Protocol_Version=MODERN, Mcp_Method="tools/call"),
-        )
-
-        self.assertEqual(status, 400)
-        self.assertEqual(response["error"]["code"], app.ERROR_HEADER_MISMATCH)
-
-    def test_unsupported_version_lists_what_the_server_speaks(self) -> None:
-        payload = _modern_request("tools/list")
-        payload["params"]["_meta"] = _meta("1900-01-01")
-
-        status, response = app._handle_mcp_post(
-            payload,
-            _headers(MCP_Protocol_Version="1900-01-01", Mcp_Method="tools/list"),
-        )
-
-        self.assertEqual(status, 400)
-        self.assertEqual(response["error"]["code"], app.ERROR_UNSUPPORTED_PROTOCOL_VERSION)
-        self.assertEqual(response["error"]["data"]["supported"], [MODERN])
-        self.assertEqual(response["error"]["data"]["requested"], "1900-01-01")
-
-    def test_offered_retry_versions_are_all_actually_accepted(self) -> None:
-        """Guards the retry loop: a client retrying with an offered version must
-        not be told the same thing again."""
-        payload = _modern_request("tools/list")
-        payload["params"]["_meta"] = _meta("1900-01-01")
-        _, response = app._handle_mcp_post(
-            payload, _headers(MCP_Protocol_Version="1900-01-01", Mcp_Method="tools/list")
-        )
-
-        for offered in response["error"]["data"]["supported"]:
-            retry = _modern_request("tools/list")
-            retry["params"]["_meta"] = _meta(offered)
-            status, retried = app._handle_mcp_post(
-                retry, _headers(MCP_Protocol_Version=offered, Mcp_Method="tools/list")
-            )
-            self.assertEqual(status, 200, f"retrying with offered version {offered} failed")
-            self.assertNotIn("error", retried)
-
-    def test_missing_client_capabilities_is_invalid_params(self) -> None:
-        payload = _modern_request("tools/list")
-        payload["params"]["_meta"] = _meta(capabilities=None)
-
-        status, response = app._handle_mcp_post(
-            payload, _headers(MCP_Protocol_Version=MODERN, Mcp_Method="tools/list")
-        )
-
-        self.assertEqual(status, 400)
-        self.assertEqual(response["error"]["code"], app.ERROR_INVALID_PARAMS)
-
-
-class HeaderValueEncodingTests(unittest.TestCase):
-    def test_plain_values_pass_through(self) -> None:
-        self.assertEqual(app._decode_header_value("get_today_summary"), "get_today_summary")
-
-    def test_base64_sentinel_is_decoded(self) -> None:
-        self.assertEqual(app._decode_header_value("=?base64?SGVsbG8sIOS4lueVjA==?="), "Hello, 世界")
-
-    def test_malformed_sentinel_is_rejected(self) -> None:
-        with self.assertRaises(ValueError):
-            app._decode_header_value("=?base64?not valid base64!?=")
-
-    def test_encoded_name_header_is_compared_after_decoding(self) -> None:
-        fake = {
-            "description": "Test tool",
-            "inputSchema": {"type": "object", "properties": {}},
-            "handler": lambda arguments, headers: {"Ok": True},
-        }
-        with (
-            patch.dict(app.TOOLS, {"ünïcode_tool": fake}),
-            patch.object(app, "_task_awareness", return_value=None),
-        ):
-            status, response = app._handle_mcp_post(
-                _modern_request("tools/call", {"name": "ünïcode_tool", "arguments": {}}),
-                _headers(
-                    MCP_Protocol_Version=MODERN,
-                    Mcp_Method="tools/call",
-                    Mcp_Name="=?base64?w7xuw69jb2RlX3Rvb2w=?=",
-                ),
-            )
-
-        self.assertEqual(status, 200)
-        self.assertEqual(response["result"]["structuredContent"], {"Ok": True})
+        self.assertTrue(is_error)
+        self.assertEqual(result, {"error": "Unknown tool: not-a-tool"})
 
 
 if __name__ == "__main__":
