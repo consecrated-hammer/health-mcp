@@ -2453,7 +2453,12 @@ TOOLS: dict[str, dict[str, Any]] = {
                 },
                 "date": {"type": "string", "description": "YYYY-MM-DD. Defaults to today in the linked user's timezone."},
                 "onset_at": {"type": "string", "description": "ISO 8601 onset datetime. Defaults to now when date is omitted."},
-                "severity": {"type": "integer", "minimum": 1, "maximum": 10},
+                "severity": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": "Self-reported headache intensity: 1-3 mild (noticeable; normal activity mostly possible), 4-6 moderate (interferes with some activity), 7-9 severe (normal activity difficult), and 10 worst imaginable. Preserve an exact number when stated. When the user gives only a label, use mild=2, moderate=5, or severe=8; qualifiers such as very or slightly may support an adjacent value.",
+                },
                 "location": {"type": "string", "maxLength": 200},
                 "notes": {"type": "string"},
                 "medication_name": {"type": "string", "minLength": 1, "maxLength": 200},

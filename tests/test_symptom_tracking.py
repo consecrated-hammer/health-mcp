@@ -217,6 +217,15 @@ class SymptomTrackingToolTests(unittest.TestCase):
         self.assertTrue(app._tool_annotations("get_headaches")["readOnlyHint"])
         self.assertTrue(app._tool_annotations("get_medication_doses")["readOnlyHint"])
 
+    def test_severity_schema_explains_numeric_and_verbal_ratings(self) -> None:
+        severity = app.TOOLS["log_headache"]["inputSchema"]["properties"]["severity"]
+
+        self.assertEqual((severity["minimum"], severity["maximum"]), (1, 10))
+        self.assertIn("1-3 mild", severity["description"])
+        self.assertIn("mild=2", severity["description"])
+        self.assertIn("moderate=5", severity["description"])
+        self.assertIn("severe=8", severity["description"])
+
 
 if __name__ == "__main__":
     unittest.main()

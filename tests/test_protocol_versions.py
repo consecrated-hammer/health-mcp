@@ -21,7 +21,7 @@ import app as health  # noqa: E402
 import server  # noqa: E402
 
 
-EXPECTED_TOOL_CONTRACT_SHA256 = "50d6a542309374a6afab393d781675a8060277bbc881230cb7a19cd23dc266d9"
+EXPECTED_TOOL_CONTRACT_SHA256 = "582724d6611b7aff72d6a39e3d903ad7f6176878c2f37fbdae9af68da0c6b24c"
 
 
 def _headers(**values: str) -> Message:
