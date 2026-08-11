@@ -76,15 +76,17 @@ logging, update, and delete tools attach the same food-log resource to their
 authoritative write result, so ChatGPT shows the refreshed log without making a
 second tool call.
 
-`app_complete_health_actions` renders forms for the same genuinely missing data
-that triggers task awareness: blank dashboard notes, incomplete dinner reflection,
-weekday work location, period status during the inferred reminder window, an
-overdue weigh-in, a due weekly review, and overdue or upcoming Health tasks. The
+`app_complete_health_actions` renders forms for genuinely missing user-provided
+data: incomplete dinner reflection, weekday work location, period status during
+the inferred reminder window, an overdue weigh-in, a due weekly review, and
+overdue or upcoming Health tasks. The
 panel is also embedded in the Today and Food Log apps, but emits no UI at all when
 none of those reminder conditions is active. Other tool results set
 `TaskAwareness.ActionApp.Required=true` only while an actionable reminder exists,
 which instructs the model to launch the dedicated app. A resting-heart-rate alert
-remains agent context rather than an input form.
+remains agent context rather than an input form. Blank dashboard notes are also
+agent work: the reminder directs the model to review the day's Health data and
+write a concise factual summary, asking the user only when the data is insufficient.
 
 `app_prepare_health_checkin` renders an editable draft for either a headache with
 an optional linked medication dose or a standalone medication dose. Preparing

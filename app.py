@@ -710,7 +710,17 @@ def _dashboard_notes_awareness(
     return {
         "NeedsLogging": True,
         "Days": reminders,
-        "AgentNotice": f"Dashboard notes are still blank for {dates}. Work with the user to capture a concise day summary.",
+        "AgentAction": {
+            "Required": True,
+            "ReadTool": "get_today_summary",
+            "WriteTool": "update_daily_log",
+            "Dates": [item["LogDate"] for item in reminders],
+        },
+        "AgentNotice": (
+            f"Dashboard notes are still blank for {dates}. Review the available Health data for each day and "
+            "write a concise factual summary to Notes with update_daily_log. Do not ask the user to summarise "
+            "the day unless the available data is genuinely insufficient."
+        ),
     }
 
 

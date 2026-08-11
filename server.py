@@ -31,7 +31,6 @@ def _has_actionable_awareness(awareness: dict[str, Any]) -> bool:
             (awareness.get(key) or {}).get("NeedsLogging") is True
             for key in (
                 "WeightReminder",
-                "DashboardNotesReminder",
                 "DinnerReflectionReminder",
                 "DailyDetailsReminder",
             )
@@ -180,7 +179,10 @@ mcp_server = Server(
         "Health tools for Everday: meal, weight, workout, headache, medication, and daily log reads and writes, "
         "plus Health-linked task management. Most tools require a linked account. When a tool result contains "
         "TaskAwareness.ActionApp.Required=true, immediately call the named ActionApp.Tool so the user receives "
-        "the conditional completion form."
+        "the conditional completion form. When DashboardNotesReminder.AgentAction.Required=true, treat each date "
+        "in AgentAction.Dates as agent work: read that day with the named read tool when needed, write a concise "
+        "factual Notes summary with the named write tool, and ask the user only when the available data is "
+        "genuinely insufficient."
     ),
     lifespan=_lifespan,
     on_list_tools=_list_tools,

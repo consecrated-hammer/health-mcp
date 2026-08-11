@@ -189,7 +189,7 @@ class TaskAwarenessTests(unittest.TestCase):
         self.assertNotIn("ActionForm", content["TaskAwareness"])
         self.assertNotIn("app_complete_health_actions", content["AgentNotice"])
 
-    def test_missing_dashboard_notes_recommends_action_app(self) -> None:
+    def test_missing_dashboard_notes_remains_agent_work_not_an_action_app(self) -> None:
         awareness = {
             "Overdue": [],
             "Upcoming": [],
@@ -199,11 +199,9 @@ class TaskAwarenessTests(unittest.TestCase):
             },
             "AgentNotice": "Dashboard notes are still blank for 2026-08-10.",
         }
-        self.assertTrue(server._has_actionable_awareness(awareness))
-        awareness["DashboardNotesReminder"]["NeedsLogging"] = False
         self.assertFalse(server._has_actionable_awareness(awareness))
 
-    def test_food_log_result_embeds_actions_without_launching_a_second_app(self) -> None:
+    def test_food_log_result_does_not_render_agent_owned_dashboard_notes(self) -> None:
         original = app.TOOLS["log_meal_text"]
         app.TOOLS["log_meal_text"] = {**original, "handler": lambda _arguments, _headers: {"Created": True}}
         try:
@@ -226,7 +224,7 @@ class TaskAwarenessTests(unittest.TestCase):
 
         self.assertFalse(is_error)
         self.assertNotIn("ActionApp", content["TaskAwareness"])
-        self.assertEqual(content["TaskAwareness"]["ActionForm"], {"Required": True})
+        self.assertNotIn("ActionForm", content["TaskAwareness"])
         self.assertNotIn("app_complete_health_actions", content["AgentNotice"])
 
     def test_includes_multiple_overdue_and_upcoming_health_tasks(self) -> None:
@@ -367,7 +365,17 @@ class TaskAwarenessTests(unittest.TestCase):
 
         self.assertTrue(awareness["NeedsLogging"])
         self.assertEqual([item["LogDate"] for item in awareness["Days"]], ["2026-07-20", "2026-07-19"])
+        self.assertEqual(
+            awareness["AgentAction"],
+            {
+                "Required": True,
+                "ReadTool": "get_today_summary",
+                "WriteTool": "update_daily_log",
+                "Dates": ["2026-07-20", "2026-07-19"],
+            },
+        )
         self.assertIn("2026-07-20", awareness["AgentNotice"])
+        self.assertIn("Do not ask the user", awareness["AgentNotice"])
 
     def test_does_not_remind_about_dashboard_notes_once_populated(self) -> None:
         summary = {

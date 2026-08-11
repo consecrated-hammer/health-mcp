@@ -62,41 +62,6 @@ function tellModel(app: App, message: string): void {
   void app.updateModelContext({ content: [{ type: "text", text: message }] }).catch(() => undefined);
 }
 
-function appendDashboardNotes(panel: HTMLElement, awareness: UnknownRecord, app: App): void {
-  const reminder = asRecord(awareness.DashboardNotesReminder);
-  if (reminder.NeedsLogging !== true) return;
-  for (const value of asArray(reminder.Days)) {
-    const day = asRecord(value);
-    const date = asString(day.LogDate);
-    if (!date) continue;
-    const section = actionSection(`Add a note for ${date}`, "Capture the short day summary that is still missing.");
-    const notes = element("textarea");
-    notes.placeholder = "A concise summary of the day…";
-    const save = button("Save note");
-    const status = statusNode();
-    section.append(field("Day summary", notes), save, status);
-    save.addEventListener("click", async () => {
-      const value = notes.value.trim();
-      if (!value) {
-        report(status, "Enter a short summary before saving.", true);
-        return;
-      }
-      save.disabled = true;
-      try {
-        await callTool(app, "update_daily_log", { date, notes: value });
-        report(status, "Day summary saved.");
-        notes.disabled = true;
-        save.hidden = true;
-        tellModel(app, `The user saved dashboard notes for ${date} from the Health Actions App.`);
-      } catch (caught: unknown) {
-        report(status, caught instanceof Error ? caught.message : "The note could not be saved.", true);
-        save.disabled = false;
-      }
-    });
-    panel.append(section);
-  }
-}
-
 function scoreSelect(): HTMLSelectElement {
   const select = element("select");
   const placeholder = element("option", undefined, "Choose…");
@@ -373,7 +338,6 @@ export function appendHealthActions(
   const awareness = awarenessFor(data);
   const panel = element("section", options.standalone ? "card health-actions" : "health-actions");
   panel.append(element(options.standalone ? "h1" : "h2", undefined, "Things to finish"));
-  appendDashboardNotes(panel, awareness, app);
   appendDinnerReflection(panel, awareness, app);
   appendDailyDetails(panel, awareness, data, app);
   appendWeight(panel, awareness, data, app);
