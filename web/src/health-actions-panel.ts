@@ -373,7 +373,6 @@ export function appendHealthActions(
   const awareness = awarenessFor(data);
   const panel = element("section", options.standalone ? "card health-actions" : "health-actions");
   panel.append(element(options.standalone ? "h1" : "h2", undefined, "Things to finish"));
-  panel.append(element("p", "hint", "These fields are shown only because the corresponding Health reminder is currently active."));
   appendDashboardNotes(panel, awareness, app);
   appendDinnerReflection(panel, awareness, app);
   appendDailyDetails(panel, awareness, data, app);
