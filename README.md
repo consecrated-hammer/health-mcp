@@ -11,8 +11,9 @@ Recipe and product reviews are full read/add/edit tools: `upsert_recipe_review` 
 - Links an external identity to an Everday user
 - Encrypts refresh tokens before storing them in SQLite
 - Serves MCP-compatible health tools over HTTP
-- Serves three versioned MCP App resources for ChatGPT: a compact daily summary,
-  a food log, and an editable headache/medication check-in
+- Serves four versioned MCP App resources for ChatGPT: a compact daily summary,
+  a food log, an editable headache/medication check-in, and conditional forms
+  for genuinely outstanding health items
 - Reads active health goals through `get_goals`, previews recommendations through `preview_goal_recommendation`, and creates or replaces outcome goals through `set_goal` without changing active targets
 - Updates current calorie, macro, step, and sodium targets through `update_targets`
 - Logs idempotent headache events and medication doses, including an optional medication dose linked to a headache
@@ -37,7 +38,7 @@ revision instead of being negotiated down.
 
 Health MCP does not maintain its own protocol negotiation, JSON-RPC dispatch,
 header validation, sessions, or result envelopes. Those are SDK-owned
-contracts. The application owns the 65-tool catalogue, schemas and annotations;
+contracts. The application owns the 66-tool catalogue, schemas and annotations;
 the OAuth gateway owns public authentication and forwards the authenticated
 identity headers consumed by tool handlers.
 
@@ -55,7 +56,7 @@ excludes tool names, arguments, authenticated identity headers, and health data.
 
 The transport is configured with JSON responses and stateless legacy HTTP.
 Modern `2026-07-28` requests are stateless by definition. The service now uses
-MCP Apps and resources for two focused presentation tools. It does not currently
+MCP Apps and resources for four focused presentation tools. It does not currently
 use MRTR, Tasks, prompts, or subscription notifications.
 
 ## MCP Apps
@@ -75,6 +76,16 @@ logging, update, and delete tools attach the same food-log resource to their
 authoritative write result, so ChatGPT shows the refreshed log without making a
 second tool call.
 
+`app_complete_health_actions` renders forms for the same genuinely missing data
+that triggers task awareness: blank dashboard notes, incomplete dinner reflection,
+weekday work location, period status during the inferred reminder window, an
+overdue weigh-in, a due weekly review, and overdue or upcoming Health tasks. The
+panel is also embedded in the Today and Food Log apps, but emits no UI at all when
+none of those reminder conditions is active. Other tool results set
+`TaskAwareness.ActionApp.Required=true` only while an actionable reminder exists,
+which instructs the model to launch the dedicated app. A resting-heart-rate alert
+remains agent context rather than an input form.
+
 `app_prepare_health_checkin` renders an editable draft for either a headache with
 an optional linked medication dose or a standalone medication dose. Preparing
 the draft is read-only. The UI writes only after the user presses **Save**, then
@@ -83,9 +94,10 @@ renders the authoritative saved records returned by Everday.
 
 The UI is bundled into self-contained, versioned resources:
 
-- `ui://health/today-v1.html`
-- `ui://health/food-log-v1.html`
-- `ui://health/checkin-v1.html`
+- `ui://health/today-v2.html`
+- `ui://health/food-log-v2.html`
+- `ui://health/checkin-v2.html`
+- `ui://health/actions-v1.html`
 
 The resource CSP has no external connection or asset domains. Existing data
 tools remain UI-independent.

@@ -11,9 +11,10 @@ from output_schemas import OUTPUT_SCHEMAS
 
 
 RESOURCE_MIME_TYPE = "text/html;profile=mcp-app"
-TODAY_RESOURCE_URI = "ui://health/today-v1.html"
-CHECKIN_RESOURCE_URI = "ui://health/checkin-v1.html"
-FOOD_LOG_RESOURCE_URI = "ui://health/food-log-v1.html"
+TODAY_RESOURCE_URI = "ui://health/today-v2.html"
+CHECKIN_RESOURCE_URI = "ui://health/checkin-v2.html"
+FOOD_LOG_RESOURCE_URI = "ui://health/food-log-v2.html"
+HEALTH_ACTIONS_RESOURCE_URI = "ui://health/actions-v1.html"
 _UI_DIST = Path(__file__).resolve().parent / "web" / "dist"
 
 
@@ -48,6 +49,14 @@ def _app_show_food_log(arguments: dict[str, Any], headers: Any) -> dict[str, Any
     if not date_value:
         date_value, _timezone = _linked_date_context(headers)
     return health._tool_get_today_summary({"date": date_value}, headers)
+
+
+def _app_complete_health_actions(_arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    linked_today, reminder_timezone = _linked_date_context(headers)
+    return {
+        "LinkedToday": linked_today,
+        "ReminderTimeZone": reminder_timezone,
+    }
 
 
 def _nullable_string(arguments: dict[str, Any], name: str) -> str | None:
@@ -150,7 +159,47 @@ CHECKIN_OUTPUT_SCHEMA: dict[str, Any] = {
 }
 
 
+HEALTH_ACTIONS_OUTPUT_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "LinkedToday": {"type": "string"},
+        "ReminderTimeZone": {"type": "string"},
+        "TaskAwareness": {"type": "object"},
+        "AgentNotice": {"type": "string"},
+    },
+    "required": ["LinkedToday", "ReminderTimeZone"],
+    "additionalProperties": True,
+}
+
+
 APP_TOOLS: dict[str, dict[str, Any]] = {
+    "app_complete_health_actions": {
+        "description": (
+            "MCP App: show an interactive completion form for genuinely outstanding Health items. "
+            "Call this immediately when any Health tool result contains "
+            "TaskAwareness.ActionApp.Required=true. Do not call it when ActionApp is absent."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        "outputSchema": HEALTH_ACTIONS_OUTPUT_SCHEMA,
+        "annotations": {
+            "title": "App: Complete health items",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+        "_meta": _app_tool_meta(
+            HEALTH_ACTIONS_RESOURCE_URI,
+            invoking="Checking outstanding health items…",
+            invoked="Health items are ready.",
+        ),
+        "handler": _app_complete_health_actions,
+    },
     "app_show_today_health": {
         "description": (
             "MCP App: display the linked Everday user's daily health summary as a compact interactive card. "
@@ -289,12 +338,17 @@ RESOURCE_DESCRIPTIONS = {
     TODAY_RESOURCE_URI: "Compact daily health summary with nutrition, activity, and recorded measurements.",
     CHECKIN_RESOURCE_URI: "Editable headache and medication check-in with explicit save confirmation.",
     FOOD_LOG_RESOURCE_URI: "Daily food log with meal entries, quantities, nutrition totals, and targets.",
+    HEALTH_ACTIONS_RESOURCE_URI: "Conditional forms for outstanding daily health details, reviews, measurements, and tasks.",
 }
 
 
 FOOD_LOG_MUTATION_TOOLS = frozenset(
     {"log_meal_text", "log_meal_image", "log_meal_manual", "update_meal", "delete_meal"}
 )
+ACTION_FORM_EMBEDDED_TOOLS = FOOD_LOG_MUTATION_TOOLS | {
+    "app_show_today_health",
+    "app_show_food_log",
+}
 
 
 def tool_meta(name: str, configured: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -311,6 +365,13 @@ def tool_meta(name: str, configured: dict[str, Any] | None) -> dict[str, Any] | 
 
 def resources() -> list[types.Resource]:
     return [
+        types.Resource(
+            name="Health Actions",
+            title="Outstanding health actions",
+            uri=HEALTH_ACTIONS_RESOURCE_URI,
+            description=RESOURCE_DESCRIPTIONS[HEALTH_ACTIONS_RESOURCE_URI],
+            mimeType=RESOURCE_MIME_TYPE,
+        ),
         types.Resource(
             name="Health Today",
             title="Health today card",
@@ -340,6 +401,7 @@ def read_resource(uri: str) -> types.ReadResourceResult:
         TODAY_RESOURCE_URI: "today.html",
         CHECKIN_RESOURCE_URI: "checkin.html",
         FOOD_LOG_RESOURCE_URI: "food-log.html",
+        HEALTH_ACTIONS_RESOURCE_URI: "health-actions.html",
     }
     filename = filenames.get(uri)
     if filename is None:

@@ -158,7 +158,76 @@ class TaskAwarenessTests(unittest.TestCase):
 
         self.assertFalse(is_error)
         self.assertEqual(content["TaskAwareness"]["Overdue"][0]["Title"], "Put water at desk")
+        self.assertEqual(
+            content["TaskAwareness"]["ActionApp"],
+            {"Tool": "app_complete_health_actions", "Required": True},
+        )
+        self.assertEqual(content["TaskAwareness"]["ActionForm"], {"Required": True})
         self.assertIn("Put water at desk", content["AgentNotice"])
+        self.assertIn("Call app_complete_health_actions now", content["AgentNotice"])
+
+    def test_only_recommends_action_app_for_actionable_missing_data(self) -> None:
+        original = app.TOOLS["log_weight"]
+        app.TOOLS["log_weight"] = {**original, "handler": lambda _arguments, _headers: {"Logged": True}}
+        try:
+            with patch.object(
+                app,
+                "_task_awareness",
+                return_value={
+                    "Overdue": [],
+                    "Upcoming": [],
+                    "RestingHeartRateAlert": {"Flagged": True, "RestingHeartRate": 104},
+                    "AgentNotice": "A resting-heart-rate trend cue is available.",
+                },
+            ):
+                content, is_error = server._invoke_tool("log_weight", {}, {})
+        finally:
+            app.TOOLS["log_weight"] = original
+
+        self.assertFalse(is_error)
+        self.assertNotIn("ActionApp", content["TaskAwareness"])
+        self.assertNotIn("ActionForm", content["TaskAwareness"])
+        self.assertNotIn("app_complete_health_actions", content["AgentNotice"])
+
+    def test_missing_dashboard_notes_recommends_action_app(self) -> None:
+        awareness = {
+            "Overdue": [],
+            "Upcoming": [],
+            "DashboardNotesReminder": {
+                "NeedsLogging": True,
+                "Days": [{"LogDate": "2026-08-10"}],
+            },
+            "AgentNotice": "Dashboard notes are still blank for 2026-08-10.",
+        }
+        self.assertTrue(server._has_actionable_awareness(awareness))
+        awareness["DashboardNotesReminder"]["NeedsLogging"] = False
+        self.assertFalse(server._has_actionable_awareness(awareness))
+
+    def test_food_log_result_embeds_actions_without_launching_a_second_app(self) -> None:
+        original = app.TOOLS["log_meal_text"]
+        app.TOOLS["log_meal_text"] = {**original, "handler": lambda _arguments, _headers: {"Created": True}}
+        try:
+            with patch.object(
+                app,
+                "_task_awareness",
+                return_value={
+                    "Overdue": [],
+                    "Upcoming": [],
+                    "DashboardNotesReminder": {
+                        "NeedsLogging": True,
+                        "Days": [{"LogDate": "2026-08-10"}],
+                    },
+                    "AgentNotice": "Dashboard notes are still blank for 2026-08-10.",
+                },
+            ):
+                content, is_error = server._invoke_tool("log_meal_text", {}, {})
+        finally:
+            app.TOOLS["log_meal_text"] = original
+
+        self.assertFalse(is_error)
+        self.assertNotIn("ActionApp", content["TaskAwareness"])
+        self.assertEqual(content["TaskAwareness"]["ActionForm"], {"Required": True})
+        self.assertNotIn("app_complete_health_actions", content["AgentNotice"])
 
     def test_includes_multiple_overdue_and_upcoming_health_tasks(self) -> None:
         now = datetime(2026, 7, 20, 9, 0, tzinfo=timezone.utc)
@@ -223,6 +292,7 @@ class TaskAwarenessTests(unittest.TestCase):
 
         self.assertEqual(awareness["LastLoggedDate"], "2026-07-12")
         self.assertEqual(awareness["DaysSinceLogged"], 8)
+        self.assertEqual(awareness["LogDate"], "2026-07-20")
         self.assertTrue(awareness["NeedsLogging"])
 
     def test_keeps_flagging_weight_after_the_eight_day_threshold(self) -> None:
@@ -279,6 +349,8 @@ class TaskAwarenessTests(unittest.TestCase):
 
         self.assertTrue(sunday["Due"])
         self.assertTrue(monday["Due"])
+        self.assertEqual(sunday["WeekStart"], "2026-07-13")
+        self.assertEqual(monday["WeekStart"], "2026-07-13")
         self.assertIsNone(monday_afternoon)
 
     def test_reminds_about_blank_dashboard_notes_after_dinner_and_next_day(self) -> None:
@@ -345,6 +417,7 @@ class TaskAwarenessTests(unittest.TestCase):
 
         self.assertEqual(near_due["PredictedStartDate"], "2026-07-24")
         self.assertEqual(near_due["EstimatedCycleDays"], 28)
+        self.assertEqual(near_due["LogDate"], "2026-07-21")
         self.assertIsNone(mid_cycle)
         self.assertIsNone(already_recorded)
 

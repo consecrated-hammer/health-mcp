@@ -119,8 +119,6 @@ function renderSaved(root: HTMLElement, data: UnknownRecord): void {
   if (hasHeadache) ids.append(element("div", undefined, `Headache: ${asString(headache.HeadacheEventId)}`));
   if (hasMedication) ids.append(element("div", undefined, `Medication: ${asString(medication.MedicationDoseId)}`));
   card.append(ids);
-  const notice = asString(data.AgentNotice);
-  if (notice) card.append(element("div", "notice", notice));
   root.replaceChildren(card);
 }
 
@@ -329,8 +327,6 @@ function renderDraft(root: HTMLElement, data: UnknownRecord, app: App): void {
     }
   });
 
-  const notice = asString(data.AgentNotice);
-  if (notice) card.append(element("div", "notice", notice));
   root.replaceChildren(card);
 }
 

@@ -22,6 +22,23 @@ from output_schemas import OUTPUT_SCHEMAS
 logger = logging.getLogger("uvicorn.error")
 
 
+def _has_actionable_awareness(awareness: dict[str, Any]) -> bool:
+    return bool(
+        awareness.get("Overdue")
+        or awareness.get("Upcoming")
+        or (awareness.get("WeeklyReview") or {}).get("Due") is True
+        or any(
+            (awareness.get(key) or {}).get("NeedsLogging") is True
+            for key in (
+                "WeightReminder",
+                "DashboardNotesReminder",
+                "DinnerReflectionReminder",
+                "DailyDetailsReminder",
+            )
+        )
+    )
+
+
 @asynccontextmanager
 async def _lifespan(_server: Server):
     health._init_db()
@@ -94,9 +111,25 @@ def _invoke_tool(name: str, arguments: dict[str, Any], headers: Any) -> tuple[An
         if isinstance(result, dict):
             awareness = health._task_awareness(headers)
             if awareness is not None:
+                has_action_form = _has_actionable_awareness(awareness)
+                if has_action_form:
+                    awareness["ActionForm"] = {"Required": True}
+                launches_action_app = name not in (
+                    mcp_apps.ACTION_FORM_EMBEDDED_TOOLS | {"app_complete_health_actions"}
+                )
+                if launches_action_app and has_action_form:
+                    awareness["ActionApp"] = {
+                        "Tool": "app_complete_health_actions",
+                        "Required": True,
+                    }
                 result["TaskAwareness"] = awareness
-                if awareness["AgentNotice"]:
-                    result["AgentNotice"] = awareness["AgentNotice"]
+                if awareness.get("AgentNotice"):
+                    app_instruction = (
+                        " Call app_complete_health_actions now so the user can complete these items."
+                        if awareness.get("ActionApp")
+                        else ""
+                    )
+                    result["AgentNotice"] = awareness["AgentNotice"] + app_instruction
         return result, False
     except (ValueError, RuntimeError) as exc:
         return {"error": str(exc)}, True
@@ -145,7 +178,9 @@ mcp_server = Server(
     version=health.Config.version,
     instructions=(
         "Health tools for Everday: meal, weight, workout, headache, medication, and daily log reads and writes, "
-        "plus Health-linked task management. Most tools require a linked account."
+        "plus Health-linked task management. Most tools require a linked account. When a tool result contains "
+        "TaskAwareness.ActionApp.Required=true, immediately call the named ActionApp.Tool so the user receives "
+        "the conditional completion form."
     ),
     lifespan=_lifespan,
     on_list_tools=_list_tools,

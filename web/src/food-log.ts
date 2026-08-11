@@ -1,5 +1,6 @@
 import "./styles.css";
 import { App } from "@modelcontextprotocol/ext-apps";
+import { appendHealthActions } from "./health-actions-panel";
 import {
   asArray,
   asNumber,
@@ -165,8 +166,7 @@ function render(result: ToolResult, _app: App): void {
     card.append(table);
   }
 
-  const notice = asString(data.AgentNotice);
-  if (notice) card.append(element("div", "notice", notice));
+  appendHealthActions(card, data, _app);
   root.replaceChildren(card);
 }
 

@@ -657,6 +657,7 @@ def _weight_logging_awareness(items: list[dict[str, Any]], reminder_timezone: st
     local_today = now_utc.astimezone(_task_timezone(None, reminder_timezone)).date()
     days_since_logged = max(0, (local_today - last_logged_date).days) if last_logged_date else None
     return {
+        "LogDate": local_today.isoformat(),
         "LastLoggedDate": last_logged_date.isoformat() if last_logged_date else None,
         "DaysSinceLogged": days_since_logged,
         "NeedsLogging": last_logged_date is None or days_since_logged >= TASK_AWARENESS_WEIGHT_DAYS,
@@ -671,9 +672,12 @@ def _weekly_review_awareness(reminder_timezone: str, now_utc: datetime) -> dict[
     )
     if not is_due_window:
         return None
+    week_start = local_now.date() - timedelta(days=local_now.weekday())
+    if local_now.weekday() == 0:
+        week_start -= timedelta(days=7)
     return {
         "Due": True,
-        "WeekStart": (local_now.date() - timedelta(days=local_now.weekday())).isoformat(),
+        "WeekStart": week_start.isoformat(),
         "Window": "Sunday evening to Monday morning",
         "AgentNotice": "Weekly review is due. Work with the user to summarise and reflect on the previous week.",
     }
@@ -801,6 +805,7 @@ def _period_cycle_awareness(
         return None
     return {
         "NeedsLogging": True,
+        "LogDate": local_today.isoformat(),
         "PredictedStartDate": predicted_start.isoformat(),
         "WindowStartDate": window_start.isoformat(),
         "WindowEndDate": window_end.isoformat(),

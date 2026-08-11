@@ -25,7 +25,7 @@ from output_schemas import OUTPUT_SCHEMAS  # noqa: E402
 import server  # noqa: E402
 
 
-EXPECTED_TOOL_CONTRACT_SHA256 = "7c9da116d1cc7870b33da3095046dda3bccd3b0183c96c78f741595d0eadd53c"
+EXPECTED_TOOL_CONTRACT_SHA256 = "eb94ee2a50d74d11003fe7fb74eeca371f908177061b767f7965e650751e237f"
 
 
 def _headers(**values: str) -> Message:
@@ -62,7 +62,7 @@ class SDKMigrationTests(unittest.TestCase):
         protocol_version, tools = anyio.run(exercise)
 
         self.assertEqual(protocol_version, "2026-07-28")
-        self.assertEqual(len(tools), 65)
+        self.assertEqual(len(tools), 66)
         payload = _contract_payload(tools)
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         self.assertEqual(hashlib.sha256(encoded).hexdigest(), EXPECTED_TOOL_CONTRACT_SHA256)
@@ -76,7 +76,7 @@ class SDKMigrationTests(unittest.TestCase):
         protocol_version, tools = anyio.run(exercise)
 
         self.assertEqual(protocol_version, "2025-11-25")
-        self.assertEqual(len(tools), 65)
+        self.assertEqual(len(tools), 66)
         self.assertTrue(all(tool.output_schema is not None for tool in tools))
 
     def test_every_tool_declares_a_valid_output_schema(self) -> None:
@@ -95,6 +95,7 @@ class SDKMigrationTests(unittest.TestCase):
     def test_app_tools_expose_versioned_ui_metadata_and_resources(self) -> None:
         descriptors = {tool.name: tool for tool in server._tool_descriptors()}
         app_tools = {
+            "app_complete_health_actions": mcp_apps.HEALTH_ACTIONS_RESOURCE_URI,
             "app_show_today_health": mcp_apps.TODAY_RESOURCE_URI,
             "app_show_food_log": mcp_apps.FOOD_LOG_RESOURCE_URI,
             "app_prepare_health_checkin": mcp_apps.CHECKIN_RESOURCE_URI,
@@ -120,6 +121,7 @@ class SDKMigrationTests(unittest.TestCase):
         resources, resource_content = anyio.run(exercise)
         self.assertEqual({str(item.uri) for item in resources}, set(mcp_apps.RESOURCE_DESCRIPTIONS))
         for uri, app_name in {
+            mcp_apps.HEALTH_ACTIONS_RESOURCE_URI: "Health Actions",
             mcp_apps.TODAY_RESOURCE_URI: "Health Today",
             mcp_apps.CHECKIN_RESOURCE_URI: "Health Check-in",
             mcp_apps.FOOD_LOG_RESOURCE_URI: "Health Food Log",
@@ -128,7 +130,15 @@ class SDKMigrationTests(unittest.TestCase):
                 html, meta = resource_content[uri]
                 self.assertIn("<main id=\"app\"", html)
                 self.assertIn(app_name, html)
+                self.assertNotIn("AgentNotice", html)
                 self.assertEqual(meta["ui"]["csp"], {"connectDomains": [], "resourceDomains": []})
+
+        for uri in (
+            mcp_apps.HEALTH_ACTIONS_RESOURCE_URI,
+            mcp_apps.TODAY_RESOURCE_URI,
+            mcp_apps.FOOD_LOG_RESOURCE_URI,
+        ):
+            self.assertIn("Things to finish", resource_content[uri][0])
 
     def test_meal_mutations_render_the_food_log_without_a_follow_up_call(self) -> None:
         descriptors = {tool.name: tool for tool in server._tool_descriptors()}
@@ -196,6 +206,20 @@ class SDKMigrationTests(unittest.TestCase):
             result = mcp_apps.APP_TOOLS["app_show_food_log"]["handler"]({}, _headers())
         self.assertEqual(result, food_log)
         get_food_log.assert_called_once_with({"date": "2026-08-11"}, ANY)
+
+        with patch.object(
+            health,
+            "_tool_get_connection_context",
+            return_value={"ReminderTimeZone": "Australia/Adelaide"},
+        ), patch.object(
+            health,
+            "_utc_now",
+            return_value=datetime(2026, 8, 10, 15, 0, tzinfo=timezone.utc),
+        ):
+            actions = mcp_apps.APP_TOOLS["app_complete_health_actions"]["handler"]({}, _headers())
+        validate(actions, mcp_apps.HEALTH_ACTIONS_OUTPUT_SCHEMA)
+        self.assertEqual(actions["LinkedToday"], "2026-08-11")
+        self.assertEqual(actions["ReminderTimeZone"], "Australia/Adelaide")
 
         with patch.object(
             health,
