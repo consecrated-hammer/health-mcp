@@ -13,7 +13,15 @@ from output_schemas import OUTPUT_SCHEMAS
 RESOURCE_MIME_TYPE = "text/html;profile=mcp-app"
 TODAY_RESOURCE_URI = "ui://health/today-v2.html"
 CHECKIN_RESOURCE_URI = "ui://health/checkin-v2.html"
-FOOD_LOG_RESOURCE_URI = "ui://health/food-log-v4.html"
+FOOD_LOG_RESOURCE_URI = "ui://health/food-log-v5.html"
+LEGACY_FOOD_LOG_RESOURCE_URIS = frozenset(
+    {
+        "ui://health/food-log-v1.html",
+        "ui://health/food-log-v2.html",
+        "ui://health/food-log-v3.html",
+        "ui://health/food-log-v4.html",
+    }
+)
 HEALTH_ACTIONS_RESOURCE_URI = "ui://health/actions-v1.html"
 _UI_DIST = Path(__file__).resolve().parent / "web" / "dist"
 
@@ -403,11 +411,15 @@ def read_resource(uri: str) -> types.ReadResourceResult:
         FOOD_LOG_RESOURCE_URI: "food-log.html",
         HEALTH_ACTIONS_RESOURCE_URI: "health-actions.html",
     }
-    filename = filenames.get(uri)
+    filename = "food-log.html" if uri in LEGACY_FOOD_LOG_RESOURCE_URIS else filenames.get(uri)
     if filename is None:
         raise ValueError(f"Unknown resource: {uri}")
     html = (_UI_DIST / filename).read_text(encoding="utf-8")
-    description = RESOURCE_DESCRIPTIONS[uri]
+    description = (
+        RESOURCE_DESCRIPTIONS[FOOD_LOG_RESOURCE_URI]
+        if uri in LEGACY_FOOD_LOG_RESOURCE_URIS
+        else RESOURCE_DESCRIPTIONS[uri]
+    )
     return types.ReadResourceResult(
         cacheScope="public",
         ttlMs=86_400_000,

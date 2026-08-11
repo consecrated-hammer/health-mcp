@@ -102,12 +102,14 @@ renders the authoritative saved records returned by Everday.
 The UI is bundled into self-contained, versioned resources:
 
 - `ui://health/today-v2.html`
-- `ui://health/food-log-v4.html`
+- `ui://health/food-log-v5.html`
 - `ui://health/checkin-v2.html`
 - `ui://health/actions-v1.html`
 
 The resource CSP has no external connection or asset domains. Existing data
-tools remain UI-independent.
+tools remain UI-independent. The server continues to resolve the earlier v1-v4
+food-log URIs so cards and tool catalogues cached by clients do not break when
+the current presentation resource advances.
 
 ## Required Environment
 
