@@ -25,7 +25,7 @@ from output_schemas import OUTPUT_SCHEMAS  # noqa: E402
 import server  # noqa: E402
 
 
-EXPECTED_TOOL_CONTRACT_SHA256 = "26185f1ee211641a441949f23087baf310f70341cd1e607f645c510343d17225"
+EXPECTED_TOOL_CONTRACT_SHA256 = "0f919a6087e823d622b957fecd2b6437a1cb497e4b57db560bec725f19675d44"
 
 
 def _headers(**values: str) -> Message:
@@ -131,6 +131,8 @@ class SDKMigrationTests(unittest.TestCase):
                 self.assertIn("<main id=\"app\"", html)
                 self.assertIn(app_name, html)
                 self.assertNotIn("AgentNotice", html)
+                self.assertIn("openai:set_globals", html)
+                self.assertIn("toolOutput", html)
                 self.assertEqual(meta["ui"]["csp"], {"connectDomains": [], "resourceDomains": []})
 
         for uri in (
@@ -144,21 +146,22 @@ class SDKMigrationTests(unittest.TestCase):
         for expected in ("REMAINING", "to minimum", "over target", "food-log-slot-breakfast"):
             self.assertIn(expected, food_log_html)
 
-        async def read_legacy_food_logs() -> dict[str, tuple[str, str]]:
+        async def read_legacy_resources() -> dict[str, tuple[str, str]]:
             async with Client(server.mcp_server, mode="auto") as client:
                 legacy_content: dict[str, tuple[str, str]] = {}
-                for uri in mcp_apps.LEGACY_FOOD_LOG_RESOURCE_URIS:
+                for uri in mcp_apps.LEGACY_RESOURCE_ALIASES:
                     read = await client.read_resource(uri)
                     content = read.contents[0]
                     legacy_content[uri] = (str(content.uri), content.text)
                 return legacy_content
 
-        legacy_content = anyio.run(read_legacy_food_logs)
-        self.assertEqual(set(legacy_content), set(mcp_apps.LEGACY_FOOD_LOG_RESOURCE_URIS))
+        legacy_content = anyio.run(read_legacy_resources)
+        self.assertEqual(set(legacy_content), set(mcp_apps.LEGACY_RESOURCE_ALIASES))
         for requested_uri, (returned_uri, html) in legacy_content.items():
             with self.subTest(legacy_resource=requested_uri):
                 self.assertEqual(returned_uri, requested_uri)
-                self.assertEqual(html, food_log_html)
+                current_uri = mcp_apps.LEGACY_RESOURCE_ALIASES[requested_uri]
+                self.assertEqual(html, resource_content[current_uri][0])
 
     def test_meal_mutations_render_the_food_log_without_a_follow_up_call(self) -> None:
         descriptors = {tool.name: tool for tool in server._tool_descriptors()}

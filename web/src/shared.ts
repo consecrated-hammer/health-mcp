@@ -1,11 +1,15 @@
 import { App } from "@modelcontextprotocol/ext-apps";
+import { hasToolOutputUpdate, normalizeHostToolOutput, type ToolResult } from "./host-result";
 
 export type UnknownRecord = Record<string, unknown>;
-export type ToolResult = {
-  structuredContent?: unknown;
-  content?: Array<{ type?: string; text?: string }>;
-  isError?: boolean;
-};
+export type { ToolResult } from "./host-result";
+
+type OpenAIHost = { toolOutput?: unknown };
+type OpenAIGlobalsEvent = CustomEvent<{ globals?: { toolOutput?: unknown } }>;
+
+function openAIHost(): OpenAIHost | undefined {
+  return (window as Window & { openai?: OpenAIHost }).openai;
+}
 
 export function asRecord(value: unknown): UnknownRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -64,8 +68,30 @@ export function connectApp(
   onResult: (result: ToolResult, app: App) => void,
 ): void {
   const app = new App({ name, version: "1.0.0" }, {}, { autoResize: true });
-  app.addEventListener("toolresult", (result) => onResult(result as ToolResult, app));
+  let hasRenderedResult = false;
+  const deliver = (value: unknown): void => {
+    const result = normalizeHostToolOutput(value);
+    if (!result) return;
+    hasRenderedResult = true;
+    onResult(result, app);
+  };
+
+  app.addEventListener("toolresult", deliver);
+  window.addEventListener(
+    "openai:set_globals",
+    ((event: OpenAIGlobalsEvent) => {
+      const globals = event.detail?.globals;
+      if (!hasToolOutputUpdate(globals)) return;
+      deliver(globals.toolOutput);
+    }) as EventListener,
+    { passive: true },
+  );
+  deliver(openAIHost()?.toolOutput);
   void app.connect().catch((error: unknown) => {
+    if (hasRenderedResult) {
+      console.warn("MCP Apps bridge unavailable; using the ChatGPT compatibility result.", error);
+      return;
+    }
     const root = document.querySelector<HTMLElement>("#app");
     if (!root) return;
     root.replaceChildren(
