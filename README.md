@@ -71,7 +71,10 @@ timezone when the date is omitted and does not render absent water, sleep, or
 weight measurements as zero.
 
 `app_show_food_log` renders a read-only daily meal table with quantities, calories,
-protein, carbohydrates, daily totals, and available targets. Successful meal
+protein, carbohydrates, colour-coded meal dividers and meal subtotals. A fixed
+scan path ends with daily `TOTAL` and `REMAINING` rows backed by Everday's
+authoritative calorie, protein, and carbohydrate calculations and available
+targets. Successful meal
 logging, update, and delete tools attach the same food-log resource to their
 authoritative write result, so ChatGPT shows the refreshed log without making a
 second tool call.
@@ -97,7 +100,7 @@ renders the authoritative saved records returned by Everday.
 The UI is bundled into self-contained, versioned resources:
 
 - `ui://health/today-v2.html`
-- `ui://health/food-log-v2.html`
+- `ui://health/food-log-v3.html`
 - `ui://health/checkin-v2.html`
 - `ui://health/actions-v1.html`
 

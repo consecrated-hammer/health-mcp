@@ -25,7 +25,7 @@ from output_schemas import OUTPUT_SCHEMAS  # noqa: E402
 import server  # noqa: E402
 
 
-EXPECTED_TOOL_CONTRACT_SHA256 = "eb94ee2a50d74d11003fe7fb74eeca371f908177061b767f7965e650751e237f"
+EXPECTED_TOOL_CONTRACT_SHA256 = "5afbeddf8e5fc1fea53ef964a631cfd581f450a5ce03766a36a0ffabe8febf89"
 
 
 def _headers(**values: str) -> Message:
@@ -139,6 +139,10 @@ class SDKMigrationTests(unittest.TestCase):
             mcp_apps.FOOD_LOG_RESOURCE_URI,
         ):
             self.assertIn("Things to finish", resource_content[uri][0])
+
+        food_log_html = resource_content[mcp_apps.FOOD_LOG_RESOURCE_URI][0]
+        for expected in ("REMAINING", "to minimum", "over target", "food-log-slot-breakfast"):
+            self.assertIn(expected, food_log_html)
 
     def test_meal_mutations_render_the_food_log_without_a_follow_up_call(self) -> None:
         descriptors = {tool.name: tool for tool in server._tool_descriptors()}

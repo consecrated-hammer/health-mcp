@@ -12,6 +12,7 @@
   --accent-soft: #dcefe9;
   --danger: #a33434;
   --danger-soft: #fbe7e7;
+  --budget-left: #9a5c00;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -26,6 +27,7 @@
     --accent-soft: #1d493d;
     --danger: #ff9c9c;
     --danger-soft: #502828;
+    --budget-left: #f0b44f;
   }
 }
 
@@ -71,17 +73,36 @@ input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px s
 .saved-grid dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 details { margin-top: 12px; color: var(--muted); font-size: 12px; }
 .food-log-status { margin-top: 0; margin-bottom: 12px; }
-.food-log-metrics { margin-bottom: 14px; }
-.food-log-table { overflow: hidden; border: 1px solid var(--border); border-radius: 10px; }
-.food-log-row { display: grid; grid-template-columns: minmax(160px, 1fr) 54px 64px 72px 64px; gap: 8px; align-items: center; min-width: 430px; padding: 8px 10px; border-top: 1px solid var(--border); font-size: 12px; }
+.food-log-saved { flex: 0 0 auto; border-radius: 999px; padding: 4px 8px; color: var(--accent); background: var(--accent-soft); font-size: 11px; font-weight: 700; }
+.food-log-table { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
+.food-log-row { display: grid; grid-template-columns: minmax(170px, 1fr) 50px 118px 100px 80px; align-items: stretch; min-width: 518px; padding: 0 10px; border-top: 1px solid var(--border); font-size: 12px; }
 .food-log-table-header { border-top: 0; color: var(--muted); background: var(--surface); font-size: 11px; font-weight: 650; }
-.food-log-table-header span:not(:first-child), .food-log-number { text-align: right; font-variant-numeric: tabular-nums; }
-.food-log-slot { padding: 7px 10px; border-top: 1px solid var(--border); color: var(--muted); background: var(--surface); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.food-log-row > span, .food-log-row > strong { display: flex; min-width: 0; align-items: center; padding: 7px 7px; border-left: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
+.food-log-row > :first-child { border-left: 0; padding-left: 0; }
+.food-log-table-header span:not(:first-child), .food-log-number { justify-content: flex-end; text-align: right; font-variant-numeric: tabular-nums; }
+.food-log-slot { display: flex; min-width: 518px; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 10px; border-top: 1px solid var(--border); border-left: 4px solid var(--meal-tone); color: var(--text); background: color-mix(in srgb, var(--meal-tone) 11%, var(--surface)); font-size: 11px; }
+.food-log-slot strong { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.food-log-slot span { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.food-log-slot-breakfast { --meal-tone: #d58a1f; }
+.food-log-slot-lunch { --meal-tone: #2f8f69; }
+.food-log-slot-dinner { --meal-tone: #557bc7; }
+.food-log-slot-snack { --meal-tone: #9166bd; }
+.food-log-slot-other { --meal-tone: #7b8794; }
 .food-log-food { min-width: 0; }
 .food-log-food strong, .food-log-food small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .food-log-food small { margin-top: 2px; color: var(--muted); font-size: 11px; }
 .food-log-note { font-style: italic; }
-.food-log-empty { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.food-log-empty-row { min-width: 518px; margin: 0; padding: 14px 10px; border-top: 1px solid var(--border); color: var(--muted); background: var(--bg); font-size: 12px; }
+.food-log-footer-row { font-variant-numeric: tabular-nums; }
+.food-log-total-row { min-height: 44px; border-top: 2px solid var(--accent); background: var(--surface); }
+.food-log-remaining-row { min-height: 44px; border-top: 1px solid var(--border); background: var(--bg); }
+.food-log-footer-label { align-items: center !important; font-size: 11px; letter-spacing: .05em; }
+.food-log-footer-value { flex-direction: column; align-items: flex-end !important; justify-content: center; text-align: right; white-space: nowrap; }
+.food-log-footer-value strong { font-size: 13px; }
+.food-log-footer-value small { max-width: 100%; overflow: hidden; color: var(--muted); font-size: 9px; font-weight: 600; text-overflow: ellipsis; }
+.food-log-budget-left strong { color: var(--budget-left); }
+.food-log-budget-met strong { color: var(--accent); }
+.food-log-budget-over strong { color: var(--danger); }
 .health-actions { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 14px; }
 .health-actions.card { margin-top: 0; border-top: 0; padding-top: 16px; }
 .health-actions h2 { margin: 0 0 4px; font-size: 16px; }
@@ -102,5 +123,4 @@ details { margin-top: 12px; color: var(--muted); font-size: 12px; }
   .field-grid { grid-template-columns: 1fr; }
   .field.full { grid-column: auto; }
   .severity { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-  .food-log-table { overflow-x: auto; }
 }
