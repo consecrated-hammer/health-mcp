@@ -14,6 +14,7 @@ import anyio
 from cryptography.fernet import Fernet
 from jsonschema import Draft202012Validator, ValidationError, validate
 from mcp import Client
+from mcp.client.extension import ClientExtension
 
 
 os.environ.setdefault("HEALTH_MCP_EVERDAY_BASE_URL", "http://everday.test")
@@ -129,6 +130,24 @@ class SDKMigrationTests(unittest.TestCase):
         self.assertEqual(result["McpSdkVersion"], "2.0.0")
         self.assertEqual(result["UiExtension"]["Identifier"], "io.modelcontextprotocol/ui")
         self.assertEqual(result["ToolCatalogues"], {"TextOnly": 63, "WithApps": 67})
+
+        class UiExtension(ClientExtension):
+            identifier = "io.modelcontextprotocol/ui"
+
+        async def exercise() -> tuple[str | None, dict | None, list]:
+            async with Client(
+                server.mcp_server,
+                mode="auto",
+                extensions=[UiExtension()],
+            ) as client:
+                listed = await client.list_tools()
+                return client.protocol_version, client.server_capabilities.extensions, listed.tools
+
+        protocol_version, extensions, tools = anyio.run(exercise)
+        self.assertEqual(protocol_version, "2026-07-28")
+        self.assertEqual(extensions, server.mcp_server.extensions)
+        self.assertEqual(len(tools), 67)
+        self.assertEqual(sum(tool.name.startswith("app_") for tool in tools), 4)
 
     def test_every_tool_declares_a_valid_output_schema(self) -> None:
         self.assertEqual(set(OUTPUT_SCHEMAS), set(health.TOOLS))

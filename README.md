@@ -54,11 +54,14 @@ Health MCP logs the protocol version, client implementation, and names of
 advertised MCP capabilities/extensions. This capability telemetry deliberately
 excludes tool names, arguments, authenticated identity headers, and health data.
 
-The server advertises the `io.modelcontextprotocol/ui` extension with the MCP
-Apps HTML MIME type during initialization. Clients must advertise the same
-extension to receive the four App tools; other clients receive the 63-tool text
-catalogue. The account-independent, read-only `server_info` tool reports the service
-build, MCP SDK version, extension declaration, and both catalogue counts.
+The server declares the `io.modelcontextprotocol/ui` extension with the MCP
+Apps HTML MIME type. Modern clients negotiate that declaration through MCP
+discovery and must advertise the same extension to receive the four App tools;
+other clients receive the 63-tool text catalogue. Legacy `2025-11-25`
+initialization cannot carry SEP-2133 extension declarations, so those clients
+remain on the text catalogue. The account-independent, read-only `server_info`
+tool reports the service build, MCP SDK version, extension declaration, and
+both catalogue counts.
 `connection_status` and `get_connection_context` also include the service name
 and build version in a compact `Server` object.
 
