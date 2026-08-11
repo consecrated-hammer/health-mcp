@@ -1,4 +1,5 @@
 import hashlib
+import importlib.metadata
 import json
 import logging
 import urllib.parse
@@ -21,6 +22,55 @@ from output_schemas import OUTPUT_SCHEMAS
 # Use Uvicorn's configured operational logger so INFO telemetry is emitted in
 # production without adding a second handler or changing global log settings.
 logger = logging.getLogger("uvicorn.error")
+UI_EXTENSION_ID = "io.modelcontextprotocol/ui"
+MCP_SDK_VERSION = importlib.metadata.version("mcp")
+
+
+def _server_info(_arguments: dict[str, Any], _headers: Any) -> dict[str, Any]:
+    return {
+        "Server": health._server_identity(),
+        "McpSdkVersion": MCP_SDK_VERSION,
+        "UiExtension": {
+            "Identifier": UI_EXTENSION_ID,
+            "MimeTypes": [mcp_apps.RESOURCE_MIME_TYPE],
+        },
+        "ToolCatalogues": {
+            "TextOnly": len(health.TOOLS) + len(SERVER_TOOLS),
+            "WithApps": len(health.TOOLS) + len(SERVER_TOOLS) + len(mcp_apps.APP_TOOLS),
+        },
+    }
+
+
+SERVER_TOOLS: dict[str, dict[str, Any]] = {
+    "server_info": {
+        "description": "Return the Health MCP service build, SDK version, UI extension declaration, and capability-aware tool counts for diagnostics.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        "outputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+                "Server": {"type": "object"},
+                "McpSdkVersion": {"type": "string"},
+                "UiExtension": {"type": "object"},
+                "ToolCatalogues": {"type": "object"},
+            },
+            "required": ["Server", "McpSdkVersion", "UiExtension", "ToolCatalogues"],
+            "additionalProperties": False,
+        },
+        "annotations": {
+            "title": "Server Info",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+        "handler": _server_info,
+    }
+}
 
 
 def _has_actionable_awareness(awareness: dict[str, Any]) -> bool:
@@ -46,7 +96,7 @@ async def _lifespan(_server: Server):
 
 
 def _tool_descriptors(*, include_apps: bool = True) -> list[types.Tool]:
-    specs = {**health.TOOLS, **(mcp_apps.APP_TOOLS if include_apps else {})}
+    specs = {**health.TOOLS, **SERVER_TOOLS, **(mcp_apps.APP_TOOLS if include_apps else {})}
 
     def description(name: str, value: str) -> str:
         if include_apps:
@@ -78,7 +128,7 @@ def _tool_descriptors(*, include_apps: bool = True) -> list[types.Tool]:
 def _client_supports_apps(context: ServerRequestContext[Any, Request]) -> bool:
     capabilities = context.session.client_capabilities
     extensions = capabilities.extensions if capabilities is not None else None
-    return "io.modelcontextprotocol/ui" in (extensions or {})
+    return UI_EXTENSION_ID in (extensions or {})
 
 
 def _client_capability_telemetry(context: ServerRequestContext[Any, Request]) -> dict[str, Any]:
@@ -171,13 +221,13 @@ def _invoke_tool(
     *,
     include_apps: bool = True,
 ) -> tuple[Any, bool]:
-    spec = health.TOOLS.get(name) or mcp_apps.APP_TOOLS.get(name)
+    spec = health.TOOLS.get(name) or SERVER_TOOLS.get(name) or mcp_apps.APP_TOOLS.get(name)
     if spec is None:
         return {"error": f"Unknown tool: {name}"}, True
 
     try:
         result = spec["handler"](arguments, headers)
-        if isinstance(result, dict):
+        if isinstance(result, dict) and name not in SERVER_TOOLS:
             awareness = health._task_awareness(headers)
             if awareness is not None:
                 has_action_form = _has_actionable_awareness(awareness)
@@ -270,6 +320,7 @@ mcp_server = Server(
     on_list_resources=_list_resources,
     on_read_resource=_read_resource,
 )
+mcp_server.extensions[UI_EXTENSION_ID] = {"mimeTypes": [mcp_apps.RESOURCE_MIME_TYPE]}
 
 
 async def _healthz(_request: Request) -> Response:
@@ -282,7 +333,7 @@ async def _version(_request: Request) -> Response:
             "service": "health-mcp",
             "version": health.Config.version,
             "everday_base_url": health.Config.everday_base_url,
-            "tools": sorted({*health.TOOLS, *mcp_apps.APP_TOOLS}),
+            "tools": sorted({*health.TOOLS, *SERVER_TOOLS, *mcp_apps.APP_TOOLS}),
             "resources": sorted(mcp_apps.RESOURCE_DESCRIPTIONS),
         }
     )

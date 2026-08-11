@@ -38,7 +38,7 @@ revision instead of being negotiated down.
 
 Health MCP does not maintain its own protocol negotiation, JSON-RPC dispatch,
 header validation, sessions, or result envelopes. Those are SDK-owned
-contracts. The application owns the 66-tool catalogue, schemas and annotations;
+contracts. The application owns the 67-tool Apps catalogue, schemas and annotations;
 the OAuth gateway owns public authentication and forwards the authenticated
 identity headers consumed by tool handlers.
 
@@ -53,6 +53,14 @@ and transport to SDK v2.
 Health MCP logs the protocol version, client implementation, and names of
 advertised MCP capabilities/extensions. This capability telemetry deliberately
 excludes tool names, arguments, authenticated identity headers, and health data.
+
+The server advertises the `io.modelcontextprotocol/ui` extension with the MCP
+Apps HTML MIME type during initialization. Clients must advertise the same
+extension to receive the four App tools; other clients receive the 63-tool text
+catalogue. The account-independent, read-only `server_info` tool reports the service
+build, MCP SDK version, extension declaration, and both catalogue counts.
+`connection_status` and `get_connection_context` also include the service name
+and build version in a compact `Server` object.
 
 The transport is configured with JSON responses and stateless legacy HTTP.
 Modern `2026-07-28` requests are stateless by definition. The service now uses

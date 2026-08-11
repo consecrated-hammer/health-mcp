@@ -131,7 +131,7 @@ OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
         }
     ),
     "connection_status": _output_schema(
-        {"linked": BOOLEAN, "external_subject": STRING},
+        {"linked": BOOLEAN, "external_subject": STRING, "Server": OBJECT},
         {
             "external_email": _nullable(STRING),
             "everday_user_id": INTEGER,
@@ -231,6 +231,7 @@ OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
             "everday_user_id": INTEGER,
             "everday_username": STRING,
             "server_date": STRING,
+            "Server": OBJECT,
         },
         {"external_email": _nullable(STRING)},
     ),

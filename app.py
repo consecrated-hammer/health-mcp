@@ -1093,6 +1093,10 @@ def _tool_disconnect_account(arguments: dict[str, Any], headers: Any) -> dict[st
     }
 
 
+def _server_identity() -> dict[str, str]:
+    return {"Name": "health-mcp", "Version": Config.version}
+
+
 def _tool_connection_status(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
     principal = _require_principal(headers)
     account = _load_account(principal["subject"] or "")
@@ -1102,6 +1106,7 @@ def _tool_connection_status(arguments: dict[str, Any], headers: Any) -> dict[str
             "linked": False,
             "external_subject": principal["subject"],
             "external_email": principal.get("email"),
+            "Server": _server_identity(),
         }
         if pending_link is not None and _parse_iso_datetime(pending_link["expires_at"]) > _utc_now():
             link_url = (
@@ -1123,6 +1128,7 @@ def _tool_connection_status(arguments: dict[str, Any], headers: Any) -> dict[str
         "everday_username": account["everday_username"],
         "created_at": account["created_at"],
         "updated_at": account["updated_at"],
+        "Server": _server_identity(),
     }
     if pending_link is not None and _parse_iso_datetime(pending_link["expires_at"]) > _utc_now():
         link_url = (
@@ -1573,6 +1579,7 @@ def _tool_get_connection_context(arguments: dict[str, Any], headers: Any) -> dic
     context["everday_user_id"] = int(account["everday_user_id"])
     context["everday_username"] = account["everday_username"]
     context["server_date"] = _today_iso()
+    context["Server"] = _server_identity()
     return context
 
 

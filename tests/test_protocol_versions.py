@@ -26,7 +26,7 @@ from output_schemas import OUTPUT_SCHEMAS  # noqa: E402
 import server  # noqa: E402
 
 
-EXPECTED_TOOL_CONTRACT_SHA256 = "cc1d8364e9b10658fe1bf238a9cc61c6cede1f7ac690e0fab1a49cc39c0422a1"
+EXPECTED_TOOL_CONTRACT_SHA256 = "27de704b2d5e6f14d6e83fffba0bc0b68bb85dfdc1d429fdc93e97e992189d30"
 
 
 def _headers(**values: str) -> Message:
@@ -63,7 +63,7 @@ class SDKMigrationTests(unittest.TestCase):
         protocol_version, tools = anyio.run(exercise)
 
         self.assertEqual(protocol_version, "2026-07-28")
-        self.assertEqual(len(tools), 62)
+        self.assertEqual(len(tools), 63)
         self.assertFalse(any(tool.name.startswith("app_") for tool in tools))
         payload = _contract_payload(server._tool_descriptors())
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -78,14 +78,14 @@ class SDKMigrationTests(unittest.TestCase):
         protocol_version, tools = anyio.run(exercise)
 
         self.assertEqual(protocol_version, "2025-11-25")
-        self.assertEqual(len(tools), 62)
+        self.assertEqual(len(tools), 63)
         self.assertFalse(any(tool.name.startswith("app_") for tool in tools))
         self.assertTrue(all(tool.output_schema is not None for tool in tools))
 
     def test_clients_without_ui_extension_receive_text_fallback_catalogue(self) -> None:
         descriptors = {tool.name: tool for tool in server._tool_descriptors(include_apps=False)}
 
-        self.assertEqual(len(descriptors), 62)
+        self.assertEqual(len(descriptors), 63)
         self.assertFalse(set(descriptors) & set(mcp_apps.APP_TOOLS))
         self.assertIsNone(descriptors["log_meal_text"].meta)
         self.assertIn("readable meal-by-meal food log", descriptors["get_today_summary"].description)
@@ -108,6 +108,28 @@ class SDKMigrationTests(unittest.TestCase):
             )
         )
 
+    def test_server_advertises_ui_extension_and_exposes_build_diagnostics(self) -> None:
+        self.assertEqual(
+            server.mcp_server.get_capabilities().extensions,
+            {
+                "io.modelcontextprotocol/ui": {
+                    "mimeTypes": [mcp_apps.RESOURCE_MIME_TYPE]
+                }
+            },
+        )
+
+        descriptors = {tool.name: tool for tool in server._tool_descriptors(include_apps=False)}
+        descriptor = descriptors["server_info"]
+        self.assertTrue(descriptor.annotations.read_only_hint)
+        self.assertIsNone(descriptor.meta)
+
+        result, is_error = server._invoke_tool("server_info", {}, _headers(), include_apps=False)
+        self.assertFalse(is_error)
+        self.assertEqual(result["Server"], {"Name": "health-mcp", "Version": health.Config.version})
+        self.assertEqual(result["McpSdkVersion"], "2.0.0")
+        self.assertEqual(result["UiExtension"]["Identifier"], "io.modelcontextprotocol/ui")
+        self.assertEqual(result["ToolCatalogues"], {"TextOnly": 63, "WithApps": 67})
+
     def test_every_tool_declares_a_valid_output_schema(self) -> None:
         self.assertEqual(set(OUTPUT_SCHEMAS), set(health.TOOLS))
         for name, schema in OUTPUT_SCHEMAS.items():
@@ -117,7 +139,11 @@ class SDKMigrationTests(unittest.TestCase):
                 self.assertIn("TaskAwareness", schema["properties"])
                 self.assertIn("AgentNotice", schema["properties"])
 
-        all_output_schemas = {**OUTPUT_SCHEMAS, **mcp_apps.APP_OUTPUT_SCHEMAS}
+        all_output_schemas = {
+            **OUTPUT_SCHEMAS,
+            "server_info": server.SERVER_TOOLS["server_info"]["outputSchema"],
+            **mcp_apps.APP_OUTPUT_SCHEMAS,
+        }
         descriptors = server._tool_descriptors()
         self.assertTrue(all(tool.output_schema == all_output_schemas[tool.name] for tool in descriptors))
 
@@ -405,6 +431,29 @@ class SDKMigrationTests(unittest.TestCase):
         self.assertFalse(is_error)
         self.assertEqual(result["external_subject"], "contract-user")
         self.assertEqual(result["external_email"], "contract@example.test")
+        self.assertEqual(result["Server"], {"Name": "health-mcp", "Version": health.Config.version})
+
+    def test_connection_context_includes_server_build_identity(self) -> None:
+        with (
+            patch.object(
+                health,
+                "_require_principal",
+                return_value={"subject": "contract-user", "email": "contract@example.test"},
+            ),
+            patch.object(
+                health,
+                "_refresh_access_for_principal",
+                return_value=("access-token", {"everday_user_id": 1, "everday_username": "user"}),
+            ),
+            patch.object(
+                health,
+                "_http_json",
+                return_value={"ReminderTimeZone": "Australia/Adelaide"},
+            ),
+        ):
+            result = health._tool_get_connection_context({}, _headers())
+
+        self.assertEqual(result["Server"], {"Name": "health-mcp", "Version": health.Config.version})
 
     def test_tool_errors_remain_model_visible_call_errors(self) -> None:
         result, is_error = server._invoke_tool("not-a-tool", {}, _headers())
