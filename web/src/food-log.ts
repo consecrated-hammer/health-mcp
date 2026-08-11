@@ -185,9 +185,11 @@ function render(result: ToolResult, _app: App): void {
     for (const entry of slotEntries) {
       const row = element("div", "food-log-row");
       const food = element("span", "food-log-food");
-      food.append(element("strong", undefined, asString(entry.FoodName) ?? "Unnamed food"));
+      const foodName = asString(entry.FoodName) ?? "Unnamed food";
       const serving = asString(entry.ServingDescription);
       const note = asString(entry.EntryNotes);
+      food.title = [foodName, serving, note].filter((value): value is string => value !== null).join("\n");
+      food.append(element("strong", undefined, foodName));
       if (serving) food.append(element("small", undefined, serving));
       if (note) food.append(element("small", "food-log-note", note));
       row.append(food);

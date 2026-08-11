@@ -25,7 +25,7 @@ from output_schemas import OUTPUT_SCHEMAS  # noqa: E402
 import server  # noqa: E402
 
 
-EXPECTED_TOOL_CONTRACT_SHA256 = "5afbeddf8e5fc1fea53ef964a631cfd581f450a5ce03766a36a0ffabe8febf89"
+EXPECTED_TOOL_CONTRACT_SHA256 = "6fe4eb4f9790f369f0ab6cc5ac545fcd25c1d6e53df8b1509ffa29cd0f44e7c8"
 
 
 def _headers(**values: str) -> Message:

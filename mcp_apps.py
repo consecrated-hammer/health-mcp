@@ -13,7 +13,7 @@ from output_schemas import OUTPUT_SCHEMAS
 RESOURCE_MIME_TYPE = "text/html;profile=mcp-app"
 TODAY_RESOURCE_URI = "ui://health/today-v2.html"
 CHECKIN_RESOURCE_URI = "ui://health/checkin-v2.html"
-FOOD_LOG_RESOURCE_URI = "ui://health/food-log-v3.html"
+FOOD_LOG_RESOURCE_URI = "ui://health/food-log-v4.html"
 HEALTH_ACTIONS_RESOURCE_URI = "ui://health/actions-v1.html"
 _UI_DIST = Path(__file__).resolve().parent / "web" / "dist"
 

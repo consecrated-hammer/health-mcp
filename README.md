@@ -100,7 +100,7 @@ renders the authoritative saved records returned by Everday.
 The UI is bundled into self-contained, versioned resources:
 
 - `ui://health/today-v2.html`
-- `ui://health/food-log-v3.html`
+- `ui://health/food-log-v4.html`
 - `ui://health/checkin-v2.html`
 - `ui://health/actions-v1.html`
 
