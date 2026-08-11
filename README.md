@@ -60,18 +60,22 @@ use MRTR, Tasks, prompts, or subscription notifications.
 
 ## MCP Apps
 
-`show_today_health` renders a read-only inline card backed by the same Everday
+App-launching tools use the `app_` prefix so they are visibly grouped in MCP
+tool catalogues. Existing meal mutation tools keep their action-oriented names
+and identify their automatic Food Log App output in their descriptions.
+
+`app_show_today_health` renders a read-only inline card backed by the same Everday
 summary used by `get_today_summary`. It uses the linked account's reminder
 timezone when the date is omitted and does not render absent water, sleep, or
 weight measurements as zero.
 
-`show_food_log` renders a read-only daily meal table with quantities, calories,
+`app_show_food_log` renders a read-only daily meal table with quantities, calories,
 protein, carbohydrates, daily totals, and available targets. Successful meal
 logging, update, and delete tools attach the same food-log resource to their
 authoritative write result, so ChatGPT shows the refreshed log without making a
 second tool call.
 
-`prepare_health_checkin` renders an editable draft for either a headache with
+`app_prepare_health_checkin` renders an editable draft for either a headache with
 an optional linked medication dose or a standalone medication dose. Preparing
 the draft is read-only. The UI writes only after the user presses **Save**, then
 calls the existing idempotent `log_headache` or `log_medication_dose` tool and

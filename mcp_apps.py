@@ -36,14 +36,14 @@ def _linked_date_context(headers: Any) -> tuple[str, str]:
     return linked_today, reminder_timezone
 
 
-def _show_today_health(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+def _app_show_today_health(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
     date_value = str(arguments.get("date") or "").strip()
     if not date_value:
         date_value, _timezone = _linked_date_context(headers)
     return health._tool_get_today_summary({"date": date_value}, headers)
 
 
-def _show_food_log(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+def _app_show_food_log(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
     date_value = str(arguments.get("date") or "").strip()
     if not date_value:
         date_value, _timezone = _linked_date_context(headers)
@@ -55,7 +55,7 @@ def _nullable_string(arguments: dict[str, Any], name: str) -> str | None:
     return value or None
 
 
-def _prepare_health_checkin(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+def _app_prepare_health_checkin(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
     # The UI needs the linked timezone even when a date was supplied: it uses
     # that zone for editable wall-clock times rather than the browser's current
     # zone, which may differ while the user is travelling.
@@ -151,9 +151,9 @@ CHECKIN_OUTPUT_SCHEMA: dict[str, Any] = {
 
 
 APP_TOOLS: dict[str, dict[str, Any]] = {
-    "show_today_health": {
+    "app_show_today_health": {
         "description": (
-            "Display the linked Everday user's daily health summary as a compact interactive card. "
+            "MCP App: display the linked Everday user's daily health summary as a compact interactive card. "
             "Use this when the user asks to see today's health status or a visual daily overview."
         ),
         "inputSchema": {
@@ -168,7 +168,7 @@ APP_TOOLS: dict[str, dict[str, Any]] = {
         },
         "outputSchema": OUTPUT_SCHEMAS["get_today_summary"],
         "annotations": {
-            "title": "Show today's health",
+            "title": "App: Today's health",
             "readOnlyHint": True,
             "destructiveHint": False,
             "idempotentHint": True,
@@ -179,11 +179,11 @@ APP_TOOLS: dict[str, dict[str, Any]] = {
             invoking="Loading today's health…",
             invoked="Today's health is ready.",
         ),
-        "handler": _show_today_health,
+        "handler": _app_show_today_health,
     },
-    "show_food_log": {
+    "app_show_food_log": {
         "description": (
-            "Display the linked Everday user's food log for one day as an interactive card. "
+            "MCP App: display the linked Everday user's food log for one day as an interactive table. "
             "Use this when the user explicitly asks to see or review their food log. Meal logging, "
             "update, and delete tools render this card automatically, so do not call this again after "
             "a successful meal mutation unless the card did not render or the user asks to refresh it."
@@ -200,7 +200,7 @@ APP_TOOLS: dict[str, dict[str, Any]] = {
         },
         "outputSchema": OUTPUT_SCHEMAS["get_today_summary"],
         "annotations": {
-            "title": "Show food log",
+            "title": "App: Food log",
             "readOnlyHint": True,
             "destructiveHint": False,
             "idempotentHint": True,
@@ -211,11 +211,11 @@ APP_TOOLS: dict[str, dict[str, Any]] = {
             invoking="Loading food log…",
             invoked="Food log is ready.",
         ),
-        "handler": _show_food_log,
+        "handler": _app_show_food_log,
     },
-    "prepare_health_checkin": {
+    "app_prepare_health_checkin": {
         "description": (
-            "Present an editable confirmation card before saving a headache with an optional linked "
+            "MCP App: present an editable confirmation card before saving a headache with an optional linked "
             "medication dose, or a standalone medication dose. Use this instead of writing immediately "
             "when ChatGPT supports MCP Apps. Preserve only details the user actually provided; the user "
             "will review the draft and activate Save in the card."
@@ -264,7 +264,7 @@ APP_TOOLS: dict[str, dict[str, Any]] = {
         },
         "outputSchema": CHECKIN_OUTPUT_SCHEMA,
         "annotations": {
-            "title": "Review health check-in",
+            "title": "App: Health check-in",
             "readOnlyHint": True,
             "destructiveHint": False,
             "idempotentHint": True,
@@ -275,7 +275,7 @@ APP_TOOLS: dict[str, dict[str, Any]] = {
             invoking="Preparing health check-in…",
             invoked="Health check-in is ready to review.",
         ),
-        "handler": _prepare_health_checkin,
+        "handler": _app_prepare_health_checkin,
     },
 }
 

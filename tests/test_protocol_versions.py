@@ -25,7 +25,7 @@ from output_schemas import OUTPUT_SCHEMAS  # noqa: E402
 import server  # noqa: E402
 
 
-EXPECTED_TOOL_CONTRACT_SHA256 = "f4a05a1f42508aa8094cfa524af5378cee3d29123094c98b99620ebf2d491941"
+EXPECTED_TOOL_CONTRACT_SHA256 = "7c9da116d1cc7870b33da3095046dda3bccd3b0183c96c78f741595d0eadd53c"
 
 
 def _headers(**values: str) -> Message:
@@ -94,11 +94,13 @@ class SDKMigrationTests(unittest.TestCase):
 
     def test_app_tools_expose_versioned_ui_metadata_and_resources(self) -> None:
         descriptors = {tool.name: tool for tool in server._tool_descriptors()}
-        for name, uri in {
-            "show_today_health": mcp_apps.TODAY_RESOURCE_URI,
-            "show_food_log": mcp_apps.FOOD_LOG_RESOURCE_URI,
-            "prepare_health_checkin": mcp_apps.CHECKIN_RESOURCE_URI,
-        }.items():
+        app_tools = {
+            "app_show_today_health": mcp_apps.TODAY_RESOURCE_URI,
+            "app_show_food_log": mcp_apps.FOOD_LOG_RESOURCE_URI,
+            "app_prepare_health_checkin": mcp_apps.CHECKIN_RESOURCE_URI,
+        }
+        self.assertEqual(set(mcp_apps.APP_TOOLS), set(app_tools))
+        for name, uri in app_tools.items():
             with self.subTest(tool=name):
                 meta = descriptors[name].meta or {}
                 self.assertEqual(meta["ui"]["resourceUri"], uri)
@@ -130,11 +132,21 @@ class SDKMigrationTests(unittest.TestCase):
 
     def test_meal_mutations_render_the_food_log_without_a_follow_up_call(self) -> None:
         descriptors = {tool.name: tool for tool in server._tool_descriptors()}
+        food_log_meta = descriptors["app_show_food_log"].meta or {}
         for name in mcp_apps.FOOD_LOG_MUTATION_TOOLS:
             with self.subTest(tool=name):
-                meta = descriptors[name].meta or {}
+                descriptor = descriptors[name]
+                meta = descriptor.meta or {}
                 self.assertEqual(meta["ui"]["resourceUri"], mcp_apps.FOOD_LOG_RESOURCE_URI)
                 self.assertEqual(meta["openai/outputTemplate"], mcp_apps.FOOD_LOG_RESOURCE_URI)
+                self.assertEqual(meta["ui"], food_log_meta["ui"])
+                self.assertEqual(meta["openai/outputTemplate"], food_log_meta["openai/outputTemplate"])
+                self.assertIn("Food Log App", descriptor.description)
+                required = set((descriptor.output_schema or {}).get("required", []))
+                self.assertTrue(
+                    {"Entries", "Totals", "Summary", "Targets"}.issubset(required),
+                    f"{name} must return the structured day snapshot consumed by the Food Log App",
+                )
 
     def test_app_handlers_use_authoritative_health_tools_without_writing_drafts(self) -> None:
         summary = {
@@ -157,7 +169,7 @@ class SDKMigrationTests(unittest.TestCase):
             ),
             patch.object(health, "_tool_get_today_summary", return_value=summary) as get_summary,
         ):
-            result = mcp_apps.APP_TOOLS["show_today_health"]["handler"]({}, _headers())
+            result = mcp_apps.APP_TOOLS["app_show_today_health"]["handler"]({}, _headers())
         self.assertEqual(result, summary)
         get_summary.assert_called_once_with({"date": "2026-08-11"}, ANY)
 
@@ -181,7 +193,7 @@ class SDKMigrationTests(unittest.TestCase):
             ),
             patch.object(health, "_tool_get_today_summary", return_value=food_log) as get_food_log,
         ):
-            result = mcp_apps.APP_TOOLS["show_food_log"]["handler"]({}, _headers())
+            result = mcp_apps.APP_TOOLS["app_show_food_log"]["handler"]({}, _headers())
         self.assertEqual(result, food_log)
         get_food_log.assert_called_once_with({"date": "2026-08-11"}, ANY)
 
@@ -194,7 +206,7 @@ class SDKMigrationTests(unittest.TestCase):
             "_utc_now",
             return_value=datetime(2026, 8, 10, 15, 0, tzinfo=timezone.utc),
         ):
-            draft = mcp_apps.APP_TOOLS["prepare_health_checkin"]["handler"](
+            draft = mcp_apps.APP_TOOLS["app_prepare_health_checkin"]["handler"](
                 {"record_type": "headache", "medication_name": "Panadol", "medication_dose": "2 tablets"},
                 _headers(),
             )
