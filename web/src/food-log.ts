@@ -23,6 +23,12 @@ const slotLabels: Record<string, string> = {
   Snack2: "Afternoon snack",
   Snack3: "Evening snack",
 };
+const metricLabels = {
+  quantity: "Qty",
+  calories: "kcal",
+  protein: "Protein (g)",
+  carbs: "Carbs (g)",
+};
 
 function effectiveQuantity(entry: UnknownRecord): number {
   return asNumber(entry.DisplayQuantity) ?? asNumber(entry.Quantity) ?? 1;
@@ -58,6 +64,15 @@ function footerCell(value: string, detail?: string, tone?: string): HTMLElement 
     detailNode.title = detail;
     node.append(detailNode);
   }
+  return node;
+}
+
+function labelledCell(node: HTMLElement, label: string): HTMLElement {
+  node.dataset.label = label;
+  const parts = [...node.children]
+    .map((child) => child.textContent?.trim())
+    .filter((value): value is string => Boolean(value));
+  node.setAttribute("aria-label", `${label}: ${parts.length ? parts.join(", ") : node.textContent ?? ""}`);
   return node;
 }
 
@@ -164,7 +179,7 @@ function render(result: ToolResult, _app: App): void {
 
   const table = element("div", "food-log-table");
   const tableHeader = element("div", "food-log-row food-log-table-header");
-  for (const label of ["Food", "Qty", "kcal", "Protein (g)", "Carbs (g)"]) {
+  for (const label of ["Food", metricLabels.quantity, metricLabels.calories, metricLabels.protein, metricLabels.carbs]) {
     tableHeader.append(element("span", undefined, label));
   }
   table.append(tableHeader);
@@ -183,7 +198,7 @@ function render(result: ToolResult, _app: App): void {
     );
     table.append(slotHeader);
     for (const entry of slotEntries) {
-      const row = element("div", "food-log-row");
+      const row = element("div", "food-log-row food-log-entry-row");
       const food = element("span", "food-log-food");
       const foodName = asString(entry.FoodName) ?? "Unnamed food";
       const serving = asString(entry.ServingDescription);
@@ -193,10 +208,10 @@ function render(result: ToolResult, _app: App): void {
       if (serving) food.append(element("small", undefined, serving));
       if (note) food.append(element("small", "food-log-note", note));
       row.append(food);
-      row.append(element("span", "food-log-number", `${numberFormat.format(effectiveQuantity(entry))}×`));
-      row.append(element("span", "food-log-number", formatMetric(effectiveNutrient(entry, "CaloriesPerServing"), "", 0)));
-      row.append(element("span", "food-log-number", formatMetric(effectiveNutrient(entry, "ProteinPerServing"), "")));
-      row.append(element("span", "food-log-number", formatMetric(effectiveNutrient(entry, "CarbsPerServing"), "")));
+      row.append(labelledCell(element("span", "food-log-number", `${numberFormat.format(effectiveQuantity(entry))}×`), metricLabels.quantity));
+      row.append(labelledCell(element("span", "food-log-number", formatMetric(effectiveNutrient(entry, "CaloriesPerServing"), "", 0)), metricLabels.calories));
+      row.append(labelledCell(element("span", "food-log-number", formatMetric(effectiveNutrient(entry, "ProteinPerServing"), "")), metricLabels.protein));
+      row.append(labelledCell(element("span", "food-log-number", formatMetric(effectiveNutrient(entry, "CarbsPerServing"), "")), metricLabels.carbs));
       table.append(row);
     }
   }
@@ -209,21 +224,21 @@ function render(result: ToolResult, _app: App): void {
       ? `net ${numberFormat.format(netCalories)} · target ${numberFormat.format(calorieTarget)}`
       : `target ${numberFormat.format(calorieTarget)}`
     : undefined;
-  totalRow.append(footerCell(formatMetric(totalCalories, "", 0), calorieDetail));
-  totalRow.append(footerCell(formatMetric(totalProtein, ""), proteinMin !== null && proteinMin > 0
+  totalRow.append(labelledCell(footerCell(formatMetric(totalCalories, "", 0), calorieDetail), metricLabels.calories));
+  totalRow.append(labelledCell(footerCell(formatMetric(totalProtein, ""), proteinMin !== null && proteinMin > 0
     ? proteinMax !== null && proteinMax > 0
       ? `target ${numberFormat.format(proteinMin)}–${numberFormat.format(proteinMax)}`
       : `minimum ${numberFormat.format(proteinMin)}`
-    : undefined));
-  totalRow.append(footerCell(formatMetric(totalCarbs, ""), carbsTarget !== null && carbsTarget > 0 ? `target ${numberFormat.format(carbsTarget)}` : undefined));
+    : undefined), metricLabels.protein));
+  totalRow.append(labelledCell(footerCell(formatMetric(totalCarbs, ""), carbsTarget !== null && carbsTarget > 0 ? `target ${numberFormat.format(carbsTarget)}` : undefined), metricLabels.carbs));
   table.append(totalRow);
 
   const remainingRow = element("div", "food-log-row food-log-footer-row food-log-remaining-row");
   remainingRow.append(element("strong", "food-log-footer-label", "REMAINING"));
   remainingRow.append(element("span"));
-  remainingRow.append(targetRemaining(totalCalories, calorieTarget, remainingCalories));
-  remainingRow.append(proteinRemaining(totalProtein, proteinMin, proteinMax, remainingProteinMin, remainingProteinMax));
-  remainingRow.append(targetRemaining(totalCarbs, carbsTarget, remainingCarbs));
+  remainingRow.append(labelledCell(targetRemaining(totalCalories, calorieTarget, remainingCalories), metricLabels.calories));
+  remainingRow.append(labelledCell(proteinRemaining(totalProtein, proteinMin, proteinMax, remainingProteinMin, remainingProteinMax), metricLabels.protein));
+  remainingRow.append(labelledCell(targetRemaining(totalCarbs, carbsTarget, remainingCarbs), metricLabels.carbs));
   table.append(remainingRow);
   card.append(table);
 

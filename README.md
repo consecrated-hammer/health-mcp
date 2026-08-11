@@ -74,7 +74,9 @@ weight measurements as zero.
 protein, carbohydrates, colour-coded meal dividers and meal subtotals. A fixed
 scan path ends with daily `TOTAL` and `REMAINING` rows backed by Everday's
 authoritative calorie, protein, and carbohydrate calculations and available
-targets. Successful meal
+targets. Hovering a desktop item reveals its full name, serving description,
+and notes; narrow mobile cards reflow each item and its metrics vertically
+without an internal horizontal scroller. Successful meal
 logging, update, and delete tools attach the same food-log resource to their
 authoritative write result, so ChatGPT shows the refreshed log without making a
 second tool call.
