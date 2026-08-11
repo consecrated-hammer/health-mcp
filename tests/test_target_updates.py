@@ -187,6 +187,29 @@ class TaskAwarenessTests(unittest.TestCase):
         self.assertNotIn("ActionApp", content["TaskAwareness"])
         self.assertNotIn("app_complete_health_actions", content["AgentNotice"])
         self.assertIn("Put water at desk", content["AgentNotice"])
+        self.assertIn("directly in the assistant response", content["AgentNotice"])
+
+    def test_meal_write_uses_text_for_actionable_reminders_even_with_app_support(self) -> None:
+        original = app.TOOLS["log_meal_manual"]
+        app.TOOLS["log_meal_manual"] = {**original, "handler": lambda _arguments, _headers: {"Created": True}}
+        try:
+            with patch.object(
+                app,
+                "_task_awareness",
+                return_value={
+                    "Overdue": [{"Title": "Put water at desk", "DueTime": "08:30"}],
+                    "Upcoming": [],
+                    "AgentNotice": "Overdue health tasks: Put water at desk (due 08:30)",
+                },
+            ):
+                content, is_error = server._invoke_tool("log_meal_manual", {}, {}, include_apps=True)
+        finally:
+            app.TOOLS["log_meal_manual"] = original
+
+        self.assertFalse(is_error)
+        self.assertNotIn("ActionApp", content["TaskAwareness"])
+        self.assertNotIn("app_complete_health_actions", content["AgentNotice"])
+        self.assertIn("directly in the assistant response", content["AgentNotice"])
 
     def test_only_recommends_action_app_for_actionable_missing_data(self) -> None:
         original = app.TOOLS["log_weight"]

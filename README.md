@@ -62,8 +62,9 @@ use MRTR, Tasks, prompts, or subscription notifications.
 ## MCP Apps
 
 App-launching tools use the `app_` prefix so they are visibly grouped in MCP
-tool catalogues. Existing meal mutation tools keep their action-oriented names
-and identify their automatic Food Log App output in their descriptions.
+tool catalogues. Existing meal mutation tools keep their action-oriented names,
+return Everday's refreshed authoritative day snapshot, and direct the model to
+confirm the write in ordinary assistant text.
 
 `app_show_today_health` renders a read-only inline card backed by the same Everday
 summary used by `get_today_summary`. It uses the linked account's reminder
@@ -76,10 +77,10 @@ scan path ends with daily `TOTAL` and `REMAINING` rows backed by Everday's
 authoritative calorie, protein, and carbohydrate calculations and available
 targets. Hovering a desktop item reveals its full name, serving description,
 and notes; narrow mobile cards reflow each item and its metrics vertically
-without an internal horizontal scroller. Successful meal
-logging, update, and delete tools attach the same food-log resource to their
-authoritative write result, so ChatGPT shows the refreshed log without making a
-second tool call.
+without an internal horizontal scroller. The App is an explicit view: meal
+logging, update, and delete tools do not attach it automatically because some
+mobile hosts load the template without delivering the write result. Ask to see
+or review the food log to launch it after a write.
 
 `app_complete_health_actions` renders forms for genuinely missing user-provided
 data: incomplete dinner reflection, weekday work location, period status during

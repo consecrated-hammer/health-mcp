@@ -245,9 +245,9 @@ APP_TOOLS: dict[str, dict[str, Any]] = {
     "app_show_food_log": {
         "description": (
             "MCP App: display the linked Everday user's food log for one day as an interactive table. "
-            "Use this when the user explicitly asks to see or review their food log. Meal logging, "
-            "update, and delete tools render this card automatically, so do not call this again after "
-            "a successful meal mutation unless the card did not render or the user asks to refresh it."
+            "Use this only when the user explicitly asks to see, review, or visually refresh their food log. "
+            "Do not call it merely because a meal was logged, updated, or deleted; those tools already return "
+            "a complete day snapshot that must be summarized directly in the assistant response."
         ),
         "inputSchema": {
             "type": "object",
@@ -277,9 +277,10 @@ APP_TOOLS: dict[str, dict[str, Any]] = {
     "app_prepare_health_checkin": {
         "description": (
             "MCP App: present an editable confirmation card before saving a headache with an optional linked "
-            "medication dose, or a standalone medication dose. Use this instead of writing immediately "
-            "when ChatGPT supports MCP Apps. Preserve only details the user actually provided; the user "
-            "will review the draft and activate Save in the card."
+            "medication dose, or a standalone medication dose. Use this only when the user explicitly asks "
+            "to record a headache or medication dose; never call it for food logging, food-label images, or "
+            "unrelated Health work. Preserve only details the user actually provided; the user will review "
+            "the draft and activate Save in the card."
         ),
         "inputSchema": {
             "type": "object",
@@ -357,7 +358,7 @@ RESOURCE_DESCRIPTIONS = {
 FOOD_LOG_MUTATION_TOOLS = frozenset(
     {"log_meal_text", "log_meal_image", "log_meal_manual", "update_meal", "delete_meal"}
 )
-ACTION_FORM_EMBEDDED_TOOLS = FOOD_LOG_MUTATION_TOOLS | {
+ACTION_FORM_RENDERING_TOOLS = {
     "app_show_today_health",
     "app_show_food_log",
 }
@@ -366,12 +367,6 @@ ACTION_FORM_EMBEDDED_TOOLS = FOOD_LOG_MUTATION_TOOLS | {
 def tool_meta(name: str, configured: dict[str, Any] | None) -> dict[str, Any] | None:
     if configured is not None:
         return configured
-    if name in FOOD_LOG_MUTATION_TOOLS:
-        return _app_tool_meta(
-            FOOD_LOG_RESOURCE_URI,
-            invoking="Updating food log…",
-            invoked="Food log updated.",
-        )
     return None
 
 

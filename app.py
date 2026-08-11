@@ -2332,7 +2332,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "handler": _tool_connection_status,
     },
     "log_meal_text": {
-        "description": "Log a meal from free text into the linked Everday user's health log. This App-enabled write automatically opens the refreshed Food Log App after success.",
+        "description": "Log a meal from free text into the linked Everday user's health log. The result includes the refreshed authoritative day snapshot; confirm the write and summarize the relevant meal details directly in the assistant response.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -2351,7 +2351,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "handler": _tool_log_meal_text,
     },
     "log_meal_image": {
-        "description": "Log a meal from a base64-encoded image into the linked Everday user's health log. This App-enabled write automatically opens the refreshed Food Log App after success.",
+        "description": "Log a meal from a base64-encoded image into the linked Everday user's health log. The result includes the refreshed authoritative day snapshot; confirm the write and summarize the relevant meal details directly in the assistant response.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -2370,7 +2370,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "handler": _tool_log_meal_image,
     },
     "log_meal_manual": {
-        "description": "Log a meal with exact calories and optional macros. Reusing a food name reuses its catalogue food while preserving different nutrition on this meal entry. This App-enabled write automatically opens the refreshed Food Log App after success.",
+        "description": "Log a meal with exact calories and optional macros. Reusing a food name reuses its catalogue food while preserving different nutrition on this meal entry. The result includes the refreshed authoritative day snapshot; confirm the write and summarize the relevant meal details directly in the assistant response.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -2400,7 +2400,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "handler": _tool_log_meal_manual,
     },
     "update_meal": {
-        "description": "Update an existing meal entry by MealEntryId, including meal slot/date, quantity, notes, or corrected nutrition details. This App-enabled write automatically opens the refreshed Food Log App after success.",
+        "description": "Update an existing meal entry by MealEntryId, including meal slot/date, quantity, notes, or corrected nutrition details. The result includes the refreshed authoritative day snapshot; confirm the write and summarize the relevant meal details directly in the assistant response.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -2431,7 +2431,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "handler": _tool_update_meal,
     },
     "delete_meal": {
-        "description": "Delete an existing meal entry by MealEntryId. This App-enabled write automatically opens the refreshed Food Log App after success.",
+        "description": "Delete an existing meal entry by MealEntryId. The result includes the refreshed authoritative day snapshot; confirm the deletion and summarize the relevant day details directly in the assistant response.",
         "inputSchema": {
             "type": "object",
             "properties": {

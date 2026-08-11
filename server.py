@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import urllib.parse
@@ -57,12 +58,6 @@ def _tool_descriptors(*, include_apps: bool = True) -> list[types.Tool]:
                 "as a readable meal-by-meal food log in the assistant response; never claim the result "
                 "is displayed in a card or shown above."
             )
-        if name in mcp_apps.FOOD_LOG_MUTATION_TOOLS:
-            app_claim = " This App-enabled write automatically opens the refreshed Food Log App after success."
-            return value.removesuffix(app_claim) + (
-                " This client does not support interactive Health Apps. Confirm the write and present the "
-                "relevant returned meal details directly in the assistant response."
-            )
         return value
 
     return [
@@ -118,6 +113,49 @@ def _log_client_capabilities(context: ServerRequestContext[Any, Request]) -> Non
     )
 
 
+def _tool_call_telemetry(
+    context: ServerRequestContext[Any, Request],
+    name: str,
+    result: Any,
+    is_error: bool,
+) -> dict[str, Any]:
+    headers = context.request.headers if context.request is not None else {}
+    subject = str(headers.get("X-Auth-Request-Sub") or "").strip()
+    account_key = hashlib.sha256(subject.encode()).hexdigest()[:12] if subject else None
+    result_record = result if isinstance(result, dict) else {}
+    entries = result_record.get("Entries")
+    daily_log = result_record.get("DailyLog")
+    log_date = (
+        daily_log.get("LogDate")
+        if isinstance(daily_log, dict)
+        else result_record.get("LogDate") or result_record.get("TargetLogDate")
+    )
+    return {
+        "event": "mcp_tool_call",
+        "tool": name,
+        "protocol_version": context.protocol_version,
+        "app_supported": _client_supports_apps(context),
+        "is_error": is_error,
+        "account_key": account_key,
+        "result_keys": sorted(result_record),
+        "entry_count": len(entries) if isinstance(entries, list) else None,
+        "log_date": log_date,
+    }
+
+
+def _log_tool_call(
+    context: ServerRequestContext[Any, Request],
+    name: str,
+    result: Any,
+    is_error: bool,
+) -> None:
+    # No arguments, food text, display names, email addresses, or raw subjects.
+    logger.info(
+        "mcp_tool_call %s",
+        json.dumps(_tool_call_telemetry(context, name, result, is_error), sort_keys=True),
+    )
+
+
 async def _list_tools(
     context: ServerRequestContext[Any, Request],
     _params: types.PaginatedRequestParams | None,
@@ -145,10 +183,12 @@ def _invoke_tool(
                 has_action_form = _has_actionable_awareness(awareness)
                 if has_action_form:
                     awareness["ActionForm"] = {"Required": True}
-                launches_action_app = name not in (
-                    mcp_apps.ACTION_FORM_EMBEDDED_TOOLS | {"app_complete_health_actions"}
+                suppresses_action_app = name in (
+                    mcp_apps.ACTION_FORM_RENDERING_TOOLS
+                    | mcp_apps.FOOD_LOG_MUTATION_TOOLS
+                    | {"app_complete_health_actions"}
                 )
-                if include_apps and launches_action_app and has_action_form:
+                if include_apps and not suppresses_action_app and has_action_form:
                     awareness["ActionApp"] = {
                         "Tool": "app_complete_health_actions",
                         "Required": True,
@@ -158,7 +198,12 @@ def _invoke_tool(
                     app_instruction = (
                         " Call app_complete_health_actions now so the user can complete these items."
                         if awareness.get("ActionApp")
-                        else ""
+                        else (
+                            " Present these outstanding items directly in the assistant response; do not call an App."
+                            if has_action_form
+                            and (not include_apps or name in mcp_apps.FOOD_LOG_MUTATION_TOOLS)
+                            else ""
+                        )
                     )
                     result["AgentNotice"] = awareness["AgentNotice"] + app_instruction
         return result, False
@@ -182,6 +227,7 @@ async def _call_tool(
             include_apps=_client_supports_apps(context),
         )
     )
+    _log_tool_call(context, params.name, result, is_error)
     text = json.dumps(result, ensure_ascii=True, indent=2, default=str)
     return types.CallToolResult(
         content=[types.TextContent(type="text", text=text)],

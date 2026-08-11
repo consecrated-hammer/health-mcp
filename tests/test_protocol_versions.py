@@ -26,7 +26,7 @@ from output_schemas import OUTPUT_SCHEMAS  # noqa: E402
 import server  # noqa: E402
 
 
-EXPECTED_TOOL_CONTRACT_SHA256 = "0f919a6087e823d622b957fecd2b6437a1cb497e4b57db560bec725f19675d44"
+EXPECTED_TOOL_CONTRACT_SHA256 = "cc1d8364e9b10658fe1bf238a9cc61c6cede1f7ac690e0fab1a49cc39c0422a1"
 
 
 def _headers(**values: str) -> Message:
@@ -192,18 +192,13 @@ class SDKMigrationTests(unittest.TestCase):
                 current_uri = mcp_apps.LEGACY_RESOURCE_ALIASES[requested_uri]
                 self.assertEqual(html, resource_content[current_uri][0])
 
-    def test_meal_mutations_render_the_food_log_without_a_follow_up_call(self) -> None:
+    def test_meal_mutations_return_day_snapshot_without_automatic_app_attachment(self) -> None:
         descriptors = {tool.name: tool for tool in server._tool_descriptors()}
-        food_log_meta = descriptors["app_show_food_log"].meta or {}
         for name in mcp_apps.FOOD_LOG_MUTATION_TOOLS:
             with self.subTest(tool=name):
                 descriptor = descriptors[name]
-                meta = descriptor.meta or {}
-                self.assertEqual(meta["ui"]["resourceUri"], mcp_apps.FOOD_LOG_RESOURCE_URI)
-                self.assertEqual(meta["openai/outputTemplate"], mcp_apps.FOOD_LOG_RESOURCE_URI)
-                self.assertEqual(meta["ui"], food_log_meta["ui"])
-                self.assertEqual(meta["openai/outputTemplate"], food_log_meta["openai/outputTemplate"])
-                self.assertIn("Food Log App", descriptor.description)
+                self.assertIsNone(descriptor.meta)
+                self.assertIn("directly in the assistant response", descriptor.description)
                 required = set((descriptor.output_schema or {}).get("required", []))
                 self.assertTrue(
                     {"Entries", "Totals", "Summary", "Targets"}.issubset(required),
@@ -325,6 +320,33 @@ class SDKMigrationTests(unittest.TestCase):
             set(payload),
             {"event", "protocol_version", "client_name", "client_version", "capabilities", "extensions"},
         )
+
+    def test_tool_call_telemetry_is_correlatable_without_personal_or_food_data(self) -> None:
+        headers = _headers(X_Auth_Request_Sub="private-subject")
+        context = SimpleNamespace(
+            protocol_version="2026-07-28",
+            session=SimpleNamespace(
+                client_capabilities=SimpleNamespace(extensions={"io.modelcontextprotocol/ui": {}})
+            ),
+            request=SimpleNamespace(headers=headers),
+        )
+        result = {
+            "Created": True,
+            "DailyLog": {"LogDate": "2026-08-11"},
+            "Entries": [{"FoodName": "Private meal text"}],
+            "Totals": {},
+        }
+
+        payload = server._tool_call_telemetry(context, "log_meal_manual", result, False)
+
+        self.assertEqual(payload["tool"], "log_meal_manual")
+        self.assertEqual(payload["entry_count"], 1)
+        self.assertEqual(payload["log_date"], "2026-08-11")
+        self.assertTrue(payload["app_supported"])
+        self.assertEqual(len(payload["account_key"]), 12)
+        encoded = json.dumps(payload)
+        self.assertNotIn("private-subject", encoded)
+        self.assertNotIn("Private meal text", encoded)
 
     def test_public_and_mcp_routes_are_composed_once(self) -> None:
         paths = [route.path for route in server.app.routes]
