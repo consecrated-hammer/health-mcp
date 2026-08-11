@@ -25,7 +25,7 @@ from output_schemas import OUTPUT_SCHEMAS  # noqa: E402
 import server  # noqa: E402
 
 
-EXPECTED_TOOL_CONTRACT_SHA256 = "50b540f2b1993512d1adb0603c98d2ecf5ccda1d1f09c7afea0777f80cec52a1"
+EXPECTED_TOOL_CONTRACT_SHA256 = "f4a05a1f42508aa8094cfa524af5378cee3d29123094c98b99620ebf2d491941"
 
 
 def _headers(**values: str) -> Message:
@@ -62,7 +62,7 @@ class SDKMigrationTests(unittest.TestCase):
         protocol_version, tools = anyio.run(exercise)
 
         self.assertEqual(protocol_version, "2026-07-28")
-        self.assertEqual(len(tools), 64)
+        self.assertEqual(len(tools), 65)
         payload = _contract_payload(tools)
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         self.assertEqual(hashlib.sha256(encoded).hexdigest(), EXPECTED_TOOL_CONTRACT_SHA256)
@@ -76,7 +76,7 @@ class SDKMigrationTests(unittest.TestCase):
         protocol_version, tools = anyio.run(exercise)
 
         self.assertEqual(protocol_version, "2025-11-25")
-        self.assertEqual(len(tools), 64)
+        self.assertEqual(len(tools), 65)
         self.assertTrue(all(tool.output_schema is not None for tool in tools))
 
     def test_every_tool_declares_a_valid_output_schema(self) -> None:
@@ -96,6 +96,7 @@ class SDKMigrationTests(unittest.TestCase):
         descriptors = {tool.name: tool for tool in server._tool_descriptors()}
         for name, uri in {
             "show_today_health": mcp_apps.TODAY_RESOURCE_URI,
+            "show_food_log": mcp_apps.FOOD_LOG_RESOURCE_URI,
             "prepare_health_checkin": mcp_apps.CHECKIN_RESOURCE_URI,
         }.items():
             with self.subTest(tool=name):
@@ -104,18 +105,36 @@ class SDKMigrationTests(unittest.TestCase):
                 self.assertEqual(meta["ui"]["visibility"], ["model", "app"])
                 self.assertEqual(meta["openai/outputTemplate"], uri)
 
-        async def exercise() -> tuple[list, str, dict]:
+        async def exercise() -> tuple[list, dict[str, tuple[str, dict]]]:
             async with Client(server.mcp_server, mode="auto") as client:
                 listed = await client.list_resources()
-                read = await client.read_resource(mcp_apps.CHECKIN_RESOURCE_URI)
-                content = read.contents[0]
-                return listed.resources, content.text, content.meta or {}
+                resource_content: dict[str, tuple[str, dict]] = {}
+                for uri in mcp_apps.RESOURCE_DESCRIPTIONS:
+                    read = await client.read_resource(uri)
+                    content = read.contents[0]
+                    resource_content[uri] = (content.text, content.meta or {})
+                return listed.resources, resource_content
 
-        resources, html, meta = anyio.run(exercise)
+        resources, resource_content = anyio.run(exercise)
         self.assertEqual({str(item.uri) for item in resources}, set(mcp_apps.RESOURCE_DESCRIPTIONS))
-        self.assertIn("<main id=\"app\"", html)
-        self.assertIn("Health Check-in", html)
-        self.assertEqual(meta["ui"]["csp"], {"connectDomains": [], "resourceDomains": []})
+        for uri, app_name in {
+            mcp_apps.TODAY_RESOURCE_URI: "Health Today",
+            mcp_apps.CHECKIN_RESOURCE_URI: "Health Check-in",
+            mcp_apps.FOOD_LOG_RESOURCE_URI: "Health Food Log",
+        }.items():
+            with self.subTest(resource=uri):
+                html, meta = resource_content[uri]
+                self.assertIn("<main id=\"app\"", html)
+                self.assertIn(app_name, html)
+                self.assertEqual(meta["ui"]["csp"], {"connectDomains": [], "resourceDomains": []})
+
+    def test_meal_mutations_render_the_food_log_without_a_follow_up_call(self) -> None:
+        descriptors = {tool.name: tool for tool in server._tool_descriptors()}
+        for name in mcp_apps.FOOD_LOG_MUTATION_TOOLS:
+            with self.subTest(tool=name):
+                meta = descriptors[name].meta or {}
+                self.assertEqual(meta["ui"]["resourceUri"], mcp_apps.FOOD_LOG_RESOURCE_URI)
+                self.assertEqual(meta["openai/outputTemplate"], mcp_apps.FOOD_LOG_RESOURCE_URI)
 
     def test_app_handlers_use_authoritative_health_tools_without_writing_drafts(self) -> None:
         summary = {
@@ -141,6 +160,30 @@ class SDKMigrationTests(unittest.TestCase):
             result = mcp_apps.APP_TOOLS["show_today_health"]["handler"]({}, _headers())
         self.assertEqual(result, summary)
         get_summary.assert_called_once_with({"date": "2026-08-11"}, ANY)
+
+        food_log = {
+            "Workouts": [],
+            "Entries": [],
+            "Totals": {},
+            "Summary": {"LogDate": "2026-08-11"},
+            "Targets": {},
+        }
+        with (
+            patch.object(
+                health,
+                "_tool_get_connection_context",
+                return_value={"ReminderTimeZone": "Australia/Adelaide"},
+            ),
+            patch.object(
+                health,
+                "_utc_now",
+                return_value=datetime(2026, 8, 10, 15, 0, tzinfo=timezone.utc),
+            ),
+            patch.object(health, "_tool_get_today_summary", return_value=food_log) as get_food_log,
+        ):
+            result = mcp_apps.APP_TOOLS["show_food_log"]["handler"]({}, _headers())
+        self.assertEqual(result, food_log)
+        get_food_log.assert_called_once_with({"date": "2026-08-11"}, ANY)
 
         with patch.object(
             health,

@@ -75,10 +75,23 @@ input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px s
 .saved-grid dt { color: var(--muted); }
 .saved-grid dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 details { margin-top: 12px; color: var(--muted); font-size: 12px; }
+.food-log-status { margin-top: 0; margin-bottom: 12px; }
+.food-log-metrics { margin-bottom: 14px; }
+.food-log-table { overflow: hidden; border: 1px solid var(--border); border-radius: 10px; }
+.food-log-row { display: grid; grid-template-columns: minmax(160px, 1fr) 54px 64px 72px 64px; gap: 8px; align-items: center; min-width: 430px; padding: 8px 10px; border-top: 1px solid var(--border); font-size: 12px; }
+.food-log-table-header { border-top: 0; color: var(--muted); background: var(--surface); font-size: 11px; font-weight: 650; }
+.food-log-table-header span:not(:first-child), .food-log-number { text-align: right; font-variant-numeric: tabular-nums; }
+.food-log-slot { padding: 7px 10px; border-top: 1px solid var(--border); color: var(--muted); background: var(--surface); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.food-log-food { min-width: 0; }
+.food-log-food strong, .food-log-food small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.food-log-food small { margin-top: 2px; color: var(--muted); font-size: 11px; }
+.food-log-note { font-style: italic; }
+.food-log-empty { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 
 @media (max-width: 520px) {
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .field-grid { grid-template-columns: 1fr; }
   .field.full { grid-column: auto; }
   .severity { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .food-log-table { overflow-x: auto; }
 }

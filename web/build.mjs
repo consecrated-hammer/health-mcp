@@ -1,7 +1,7 @@
 import { build } from "esbuild";
 import { mkdir, writeFile } from "node:fs/promises";
 
-const entries = ["today", "checkin"];
+const entries = ["today", "checkin", "food-log"];
 await mkdir("dist", { recursive: true });
 
 for (const entry of entries) {

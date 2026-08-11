@@ -11,8 +11,8 @@ Recipe and product reviews are full read/add/edit tools: `upsert_recipe_review` 
 - Links an external identity to an Everday user
 - Encrypts refresh tokens before storing them in SQLite
 - Serves MCP-compatible health tools over HTTP
-- Serves two versioned MCP App resources for ChatGPT: a compact daily summary
-  and an editable headache/medication check-in
+- Serves three versioned MCP App resources for ChatGPT: a compact daily summary,
+  a food log, and an editable headache/medication check-in
 - Reads active health goals through `get_goals`, previews recommendations through `preview_goal_recommendation`, and creates or replaces outcome goals through `set_goal` without changing active targets
 - Updates current calorie, macro, step, and sodium targets through `update_targets`
 - Logs idempotent headache events and medication doses, including an optional medication dose linked to a headache
@@ -37,7 +37,7 @@ revision instead of being negotiated down.
 
 Health MCP does not maintain its own protocol negotiation, JSON-RPC dispatch,
 header validation, sessions, or result envelopes. Those are SDK-owned
-contracts. The application owns the 64-tool catalogue, schemas and annotations;
+contracts. The application owns the 65-tool catalogue, schemas and annotations;
 the OAuth gateway owns public authentication and forwards the authenticated
 identity headers consumed by tool handlers.
 
@@ -65,6 +65,12 @@ summary used by `get_today_summary`. It uses the linked account's reminder
 timezone when the date is omitted and does not render absent water, sleep, or
 weight measurements as zero.
 
+`show_food_log` renders a read-only daily meal table with quantities, calories,
+protein, carbohydrates, daily totals, and available targets. Successful meal
+logging, update, and delete tools attach the same food-log resource to their
+authoritative write result, so ChatGPT shows the refreshed log without making a
+second tool call.
+
 `prepare_health_checkin` renders an editable draft for either a headache with
 an optional linked medication dose or a standalone medication dose. Preparing
 the draft is read-only. The UI writes only after the user presses **Save**, then
@@ -74,6 +80,7 @@ renders the authoritative saved records returned by Everday.
 The UI is bundled into self-contained, versioned resources:
 
 - `ui://health/today-v1.html`
+- `ui://health/food-log-v1.html`
 - `ui://health/checkin-v1.html`
 
 The resource CSP has no external connection or asset domains. Existing data

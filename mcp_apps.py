@@ -13,6 +13,7 @@ from output_schemas import OUTPUT_SCHEMAS
 RESOURCE_MIME_TYPE = "text/html;profile=mcp-app"
 TODAY_RESOURCE_URI = "ui://health/today-v1.html"
 CHECKIN_RESOURCE_URI = "ui://health/checkin-v1.html"
+FOOD_LOG_RESOURCE_URI = "ui://health/food-log-v1.html"
 _UI_DIST = Path(__file__).resolve().parent / "web" / "dist"
 
 
@@ -36,6 +37,13 @@ def _linked_date_context(headers: Any) -> tuple[str, str]:
 
 
 def _show_today_health(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
+    date_value = str(arguments.get("date") or "").strip()
+    if not date_value:
+        date_value, _timezone = _linked_date_context(headers)
+    return health._tool_get_today_summary({"date": date_value}, headers)
+
+
+def _show_food_log(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
     date_value = str(arguments.get("date") or "").strip()
     if not date_value:
         date_value, _timezone = _linked_date_context(headers)
@@ -173,6 +181,38 @@ APP_TOOLS: dict[str, dict[str, Any]] = {
         ),
         "handler": _show_today_health,
     },
+    "show_food_log": {
+        "description": (
+            "Display the linked Everday user's food log for one day as an interactive card. "
+            "Use this when the user explicitly asks to see or review their food log. Meal logging, "
+            "update, and delete tools render this card automatically, so do not call this again after "
+            "a successful meal mutation unless the card did not render or the user asks to refresh it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "date": {
+                    "type": "string",
+                    "description": "Optional YYYY-MM-DD. Defaults to today in the linked user's timezone.",
+                }
+            },
+            "additionalProperties": False,
+        },
+        "outputSchema": OUTPUT_SCHEMAS["get_today_summary"],
+        "annotations": {
+            "title": "Show food log",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+        "_meta": _app_tool_meta(
+            FOOD_LOG_RESOURCE_URI,
+            invoking="Loading food log…",
+            invoked="Food log is ready.",
+        ),
+        "handler": _show_food_log,
+    },
     "prepare_health_checkin": {
         "description": (
             "Present an editable confirmation card before saving a headache with an optional linked "
@@ -248,7 +288,25 @@ APP_OUTPUT_SCHEMAS = {
 RESOURCE_DESCRIPTIONS = {
     TODAY_RESOURCE_URI: "Compact daily health summary with nutrition, activity, and recorded measurements.",
     CHECKIN_RESOURCE_URI: "Editable headache and medication check-in with explicit save confirmation.",
+    FOOD_LOG_RESOURCE_URI: "Daily food log with meal entries, quantities, nutrition totals, and targets.",
 }
+
+
+FOOD_LOG_MUTATION_TOOLS = frozenset(
+    {"log_meal_text", "log_meal_image", "log_meal_manual", "update_meal", "delete_meal"}
+)
+
+
+def tool_meta(name: str, configured: dict[str, Any] | None) -> dict[str, Any] | None:
+    if configured is not None:
+        return configured
+    if name in FOOD_LOG_MUTATION_TOOLS:
+        return _app_tool_meta(
+            FOOD_LOG_RESOURCE_URI,
+            invoking="Updating food log…",
+            invoked="Food log updated.",
+        )
+    return None
 
 
 def resources() -> list[types.Resource]:
@@ -267,6 +325,13 @@ def resources() -> list[types.Resource]:
             description=RESOURCE_DESCRIPTIONS[CHECKIN_RESOURCE_URI],
             mimeType=RESOURCE_MIME_TYPE,
         ),
+        types.Resource(
+            name="Health Food Log",
+            title="Health food log card",
+            uri=FOOD_LOG_RESOURCE_URI,
+            description=RESOURCE_DESCRIPTIONS[FOOD_LOG_RESOURCE_URI],
+            mimeType=RESOURCE_MIME_TYPE,
+        ),
     ]
 
 
@@ -274,6 +339,7 @@ def read_resource(uri: str) -> types.ReadResourceResult:
     filenames = {
         TODAY_RESOURCE_URI: "today.html",
         CHECKIN_RESOURCE_URI: "checkin.html",
+        FOOD_LOG_RESOURCE_URI: "food-log.html",
     }
     filename = filenames.get(uri)
     if filename is None:

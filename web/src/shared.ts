@@ -25,6 +25,18 @@ export function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+export function formatCalendarDate(
+  value: string | null,
+  locale: string,
+  options: Intl.DateTimeFormatOptions,
+  fallback = "Today",
+): string {
+  if (!value) return fallback;
+  const parts = value.slice(0, 10).split("-").map(Number);
+  if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) return value;
+  return new Intl.DateTimeFormat(locale, options).format(new Date(parts[0], parts[1] - 1, parts[2]));
+}
+
 export function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   className?: string,

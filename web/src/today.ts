@@ -7,22 +7,12 @@ import {
   asString,
   connectApp,
   element,
+  formatCalendarDate,
   ToolResult,
 } from "./shared";
 
 const locale = document.documentElement.lang || navigator.language || "en-AU";
 const numberFormat = new Intl.NumberFormat(locale, { maximumFractionDigits: 1 });
-
-function formatDate(value: string | null): string {
-  if (!value) return "Today";
-  const parts = value.slice(0, 10).split("-").map(Number);
-  if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) return value;
-  return new Intl.DateTimeFormat(locale, {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-  }).format(new Date(parts[0], parts[1] - 1, parts[2]));
-}
 
 function metric(
   label: string,
@@ -58,7 +48,11 @@ function render(result: ToolResult, _app: App): void {
   const header = element("header", "card-header");
   const heading = element("div");
   heading.append(element("h1", undefined, "Today at a glance"));
-  heading.append(element("div", "subtitle", formatDate(asString(summary.LogDate))));
+  heading.append(element("div", "subtitle", formatCalendarDate(asString(summary.LogDate), locale, {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  })));
   header.append(heading);
   card.append(header);
 

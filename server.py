@@ -38,7 +38,7 @@ def _tool_descriptors() -> list[types.Tool]:
             annotations=types.ToolAnnotations.model_validate(
                 spec.get("annotations") or health._tool_annotations(name)
             ),
-            _meta=spec.get("_meta"),
+            _meta=mcp_apps.tool_meta(name, spec.get("_meta")),
         )
         for name, spec in {**health.TOOLS, **mcp_apps.APP_TOOLS}.items()
     ]
