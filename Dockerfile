@@ -23,7 +23,8 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY app.py mcp_apps.py output_schemas.py server.py /app/
 COPY --from=ui-build /build/web/dist /app/web/dist
-RUN printf '%s\n' "$BUILD_VERSION" > /app/version.txt
+RUN printf '%s\n' "$BUILD_VERSION" > /app/version.txt \
+    && date -u '+%Y-%m-%dT%H:%M:%SZ' > /app/build_timestamp.txt
 
 RUN mkdir -p /app /data && chown -R 1000:1000 /app /data
 

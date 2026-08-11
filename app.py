@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -22,10 +23,16 @@ def _require_env(name: str) -> str:
     return value
 
 
-def _build_version() -> str:
-    version_file = os.environ.get("HEALTH_MCP_VERSION_FILE", "/app/version.txt").strip() or "/app/version.txt"
+def _read_build_value(
+    *,
+    file_env: str,
+    default_file: str,
+    value_env: str,
+    default_value: str,
+) -> str:
+    value_file = os.environ.get(file_env, default_file).strip() or default_file
     try:
-        with open(version_file, "r", encoding="utf-8") as handle:
+        with open(value_file, "r", encoding="utf-8") as handle:
             value = handle.read().strip()
             if value:
                 return value
@@ -33,13 +40,38 @@ def _build_version() -> str:
         pass
     except OSError:
         pass
-    return os.environ.get("HEALTH_MCP_VERSION", "dev").strip() or "dev"
+    return os.environ.get(value_env, default_value).strip() or default_value
+
+
+def _semver_build_identifier(value: str) -> str:
+    return re.sub(r"[^0-9A-Za-z-]+", "-", value).strip("-") or "dev"
+
+
+def _build_version() -> str:
+    return _read_build_value(
+        file_env="HEALTH_MCP_VERSION_FILE",
+        default_file="/app/version.txt",
+        value_env="HEALTH_MCP_VERSION",
+        default_value="dev",
+    )
+
+
+def _build_timestamp() -> str:
+    return _read_build_value(
+        file_env="HEALTH_MCP_BUILD_TIMESTAMP_FILE",
+        default_file="/app/build_timestamp.txt",
+        value_env="HEALTH_MCP_BUILD_TIMESTAMP",
+        default_value="unknown",
+    )
 
 
 class Config:
     host = os.environ.get("HEALTH_MCP_HOST", "0.0.0.0").strip() or "0.0.0.0"
     port = int(os.environ.get("HEALTH_MCP_PORT", "8766"))
+    api_version = "1.0.0"
     version = _build_version()
+    build_timestamp = _build_timestamp()
+    service_version = f"{api_version}+{_semver_build_identifier(version)}"
     provider = os.environ.get("HEALTH_MCP_PROVIDER", "authelia").strip() or "authelia"
     public_base_url = os.environ.get("HEALTH_MCP_PUBLIC_BASE_URL", "").strip().rstrip("/")
     everday_base_url = _require_env("HEALTH_MCP_EVERDAY_BASE_URL").rstrip("/")
@@ -1094,7 +1126,12 @@ def _tool_disconnect_account(arguments: dict[str, Any], headers: Any) -> dict[st
 
 
 def _server_identity() -> dict[str, str]:
-    return {"Name": "health-mcp", "Version": Config.version}
+    return {
+        "Name": "health-mcp",
+        "Version": Config.version,
+        "ApiVersion": Config.api_version,
+        "BuildTimestamp": Config.build_timestamp,
+    }
 
 
 def _tool_connection_status(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:

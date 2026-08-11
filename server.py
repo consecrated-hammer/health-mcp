@@ -304,7 +304,7 @@ async def _read_resource(
 
 mcp_server = Server(
     name="health-mcp",
-    version=health.Config.version,
+    version=health.Config.service_version,
     instructions=(
         "Health tools for Everday: meal, weight, workout, headache, medication, and daily log reads and writes, "
         "plus Health-linked task management. Most tools require a linked account. When a tool result contains "
@@ -332,6 +332,8 @@ async def _version(_request: Request) -> Response:
         {
             "service": "health-mcp",
             "version": health.Config.version,
+            "api_version": health.Config.api_version,
+            "build_timestamp": health.Config.build_timestamp,
             "everday_base_url": health.Config.everday_base_url,
             "tools": sorted({*health.TOOLS, *SERVER_TOOLS, *mcp_apps.APP_TOOLS}),
             "resources": sorted(mcp_apps.RESOURCE_DESCRIPTIONS),
@@ -340,7 +342,14 @@ async def _version(_request: Request) -> Response:
 
 
 async def _root(_request: Request) -> Response:
-    return JSONResponse({"service": "health-mcp", "version": health.Config.version})
+    return JSONResponse(
+        {
+            "service": "health-mcp",
+            "version": health.Config.version,
+            "api_version": health.Config.api_version,
+            "build_timestamp": health.Config.build_timestamp,
+        }
+    )
 
 
 def _link_error(status: int, message: str) -> Response:

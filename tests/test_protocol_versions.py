@@ -126,7 +126,11 @@ class SDKMigrationTests(unittest.TestCase):
 
         result, is_error = server._invoke_tool("server_info", {}, _headers(), include_apps=False)
         self.assertFalse(is_error)
-        self.assertEqual(result["Server"], {"Name": "health-mcp", "Version": health.Config.version})
+        self.assertEqual(result["Server"], health._server_identity())
+        self.assertEqual(result["Server"]["Version"], health.Config.version)
+        self.assertEqual(result["Server"]["ApiVersion"], "1.0.0")
+        self.assertIn("BuildTimestamp", result["Server"])
+        self.assertEqual(health._semver_build_identifier("v1/dirty+local"), "v1-dirty-local")
         self.assertEqual(result["McpSdkVersion"], "2.0.0")
         self.assertEqual(result["UiExtension"]["Identifier"], "io.modelcontextprotocol/ui")
         self.assertEqual(result["ToolCatalogues"], {"TextOnly": 63, "WithApps": 67})
@@ -450,7 +454,7 @@ class SDKMigrationTests(unittest.TestCase):
         self.assertFalse(is_error)
         self.assertEqual(result["external_subject"], "contract-user")
         self.assertEqual(result["external_email"], "contract@example.test")
-        self.assertEqual(result["Server"], {"Name": "health-mcp", "Version": health.Config.version})
+        self.assertEqual(result["Server"], health._server_identity())
 
     def test_connection_context_includes_server_build_identity(self) -> None:
         with (
@@ -472,7 +476,7 @@ class SDKMigrationTests(unittest.TestCase):
         ):
             result = health._tool_get_connection_context({}, _headers())
 
-        self.assertEqual(result["Server"], {"Name": "health-mcp", "Version": health.Config.version})
+        self.assertEqual(result["Server"], health._server_identity())
 
     def test_tool_errors_remain_model_visible_call_errors(self) -> None:
         result, is_error = server._invoke_tool("not-a-tool", {}, _headers())

@@ -63,7 +63,9 @@ remain on the text catalogue. The account-independent, read-only `server_info`
 tool reports the service build, MCP SDK version, extension declaration, and
 both catalogue counts.
 `connection_status` and `get_connection_context` also include the service name
-and build version in a compact `Server` object.
+and build identity in a compact `Server` object: semantic compatibility version,
+exact source commit, and UTC image-build timestamp. The MCP `serverInfo.version`
+combines the compatibility and commit versions as SemVer build metadata.
 
 The transport is configured with JSON responses and stateless legacy HTTP.
 Modern `2026-07-28` requests are stateless by definition. The service now uses
