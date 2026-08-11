@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from email.message import Message
 from importlib.metadata import version
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import ANY, patch
 
 import anyio
@@ -62,8 +63,9 @@ class SDKMigrationTests(unittest.TestCase):
         protocol_version, tools = anyio.run(exercise)
 
         self.assertEqual(protocol_version, "2026-07-28")
-        self.assertEqual(len(tools), 66)
-        payload = _contract_payload(tools)
+        self.assertEqual(len(tools), 62)
+        self.assertFalse(any(tool.name.startswith("app_") for tool in tools))
+        payload = _contract_payload(server._tool_descriptors())
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         self.assertEqual(hashlib.sha256(encoded).hexdigest(), EXPECTED_TOOL_CONTRACT_SHA256)
 
@@ -76,8 +78,35 @@ class SDKMigrationTests(unittest.TestCase):
         protocol_version, tools = anyio.run(exercise)
 
         self.assertEqual(protocol_version, "2025-11-25")
-        self.assertEqual(len(tools), 66)
+        self.assertEqual(len(tools), 62)
+        self.assertFalse(any(tool.name.startswith("app_") for tool in tools))
         self.assertTrue(all(tool.output_schema is not None for tool in tools))
+
+    def test_clients_without_ui_extension_receive_text_fallback_catalogue(self) -> None:
+        descriptors = {tool.name: tool for tool in server._tool_descriptors(include_apps=False)}
+
+        self.assertEqual(len(descriptors), 62)
+        self.assertFalse(set(descriptors) & set(mcp_apps.APP_TOOLS))
+        self.assertIsNone(descriptors["log_meal_text"].meta)
+        self.assertIn("readable meal-by-meal food log", descriptors["get_today_summary"].description)
+        self.assertIn("never claim", descriptors["get_today_summary"].description)
+        for name in mcp_apps.FOOD_LOG_MUTATION_TOOLS:
+            with self.subTest(tool=name):
+                self.assertNotIn("automatically opens", descriptors[name].description)
+                self.assertIn("directly in the assistant response", descriptors[name].description)
+
+    def test_only_explicit_ui_extension_enables_app_catalogue(self) -> None:
+        def context(extensions: dict | None) -> SimpleNamespace:
+            capabilities = SimpleNamespace(extensions=extensions) if extensions is not None else None
+            return SimpleNamespace(session=SimpleNamespace(client_capabilities=capabilities))
+
+        self.assertFalse(server._client_supports_apps(context(None)))
+        self.assertFalse(server._client_supports_apps(context({})))
+        self.assertTrue(
+            server._client_supports_apps(
+                context({"io.modelcontextprotocol/ui": {}})
+            )
+        )
 
     def test_every_tool_declares_a_valid_output_schema(self) -> None:
         self.assertEqual(set(OUTPUT_SCHEMAS), set(health.TOOLS))

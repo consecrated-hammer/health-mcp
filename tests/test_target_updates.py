@@ -166,6 +166,28 @@ class TaskAwarenessTests(unittest.TestCase):
         self.assertIn("Put water at desk", content["AgentNotice"])
         self.assertIn("Call app_complete_health_actions now", content["AgentNotice"])
 
+    def test_text_fallback_does_not_recommend_hidden_action_app(self) -> None:
+        original = app.TOOLS["log_weight"]
+        app.TOOLS["log_weight"] = {**original, "handler": lambda _arguments, _headers: {"Logged": True}}
+        try:
+            with patch.object(
+                app,
+                "_task_awareness",
+                return_value={
+                    "Overdue": [{"Title": "Put water at desk", "DueTime": "08:30"}],
+                    "Upcoming": [],
+                    "AgentNotice": "Overdue health tasks: Put water at desk (due 08:30)",
+                },
+            ):
+                content, is_error = server._invoke_tool("log_weight", {}, {}, include_apps=False)
+        finally:
+            app.TOOLS["log_weight"] = original
+
+        self.assertFalse(is_error)
+        self.assertNotIn("ActionApp", content["TaskAwareness"])
+        self.assertNotIn("app_complete_health_actions", content["AgentNotice"])
+        self.assertIn("Put water at desk", content["AgentNotice"])
+
     def test_only_recommends_action_app_for_actionable_missing_data(self) -> None:
         original = app.TOOLS["log_weight"]
         app.TOOLS["log_weight"] = {**original, "handler": lambda _arguments, _headers: {"Logged": True}}

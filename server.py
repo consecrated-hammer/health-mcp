@@ -44,20 +44,46 @@ async def _lifespan(_server: Server):
     yield None
 
 
-def _tool_descriptors() -> list[types.Tool]:
+def _tool_descriptors(*, include_apps: bool = True) -> list[types.Tool]:
+    specs = {**health.TOOLS, **(mcp_apps.APP_TOOLS if include_apps else {})}
+
+    def description(name: str, value: str) -> str:
+        if include_apps:
+            return value
+        if name == "get_today_summary":
+            return (
+                value
+                + " This client does not support interactive Health Apps. Present the returned Entries "
+                "as a readable meal-by-meal food log in the assistant response; never claim the result "
+                "is displayed in a card or shown above."
+            )
+        if name in mcp_apps.FOOD_LOG_MUTATION_TOOLS:
+            app_claim = " This App-enabled write automatically opens the refreshed Food Log App after success."
+            return value.removesuffix(app_claim) + (
+                " This client does not support interactive Health Apps. Confirm the write and present the "
+                "relevant returned meal details directly in the assistant response."
+            )
+        return value
+
     return [
         types.Tool(
             name=name,
-            description=spec["description"],
+            description=description(name, spec["description"]),
             inputSchema=spec["inputSchema"],
             outputSchema=spec.get("outputSchema") or OUTPUT_SCHEMAS[name],
             annotations=types.ToolAnnotations.model_validate(
                 spec.get("annotations") or health._tool_annotations(name)
             ),
-            _meta=mcp_apps.tool_meta(name, spec.get("_meta")),
+            _meta=mcp_apps.tool_meta(name, spec.get("_meta")) if include_apps else None,
         )
-        for name, spec in {**health.TOOLS, **mcp_apps.APP_TOOLS}.items()
+        for name, spec in specs.items()
     ]
+
+
+def _client_supports_apps(context: ServerRequestContext[Any, Request]) -> bool:
+    capabilities = context.session.client_capabilities
+    extensions = capabilities.extensions if capabilities is not None else None
+    return "io.modelcontextprotocol/ui" in (extensions or {})
 
 
 def _client_capability_telemetry(context: ServerRequestContext[Any, Request]) -> dict[str, Any]:
@@ -97,10 +123,16 @@ async def _list_tools(
     _params: types.PaginatedRequestParams | None,
 ) -> types.ListToolsResult:
     _log_client_capabilities(context)
-    return types.ListToolsResult(tools=_tool_descriptors())
+    return types.ListToolsResult(tools=_tool_descriptors(include_apps=_client_supports_apps(context)))
 
 
-def _invoke_tool(name: str, arguments: dict[str, Any], headers: Any) -> tuple[Any, bool]:
+def _invoke_tool(
+    name: str,
+    arguments: dict[str, Any],
+    headers: Any,
+    *,
+    include_apps: bool = True,
+) -> tuple[Any, bool]:
     spec = health.TOOLS.get(name) or mcp_apps.APP_TOOLS.get(name)
     if spec is None:
         return {"error": f"Unknown tool: {name}"}, True
@@ -116,7 +148,7 @@ def _invoke_tool(name: str, arguments: dict[str, Any], headers: Any) -> tuple[An
                 launches_action_app = name not in (
                     mcp_apps.ACTION_FORM_EMBEDDED_TOOLS | {"app_complete_health_actions"}
                 )
-                if launches_action_app and has_action_form:
+                if include_apps and launches_action_app and has_action_form:
                     awareness["ActionApp"] = {
                         "Tool": "app_complete_health_actions",
                         "Required": True,
@@ -143,10 +175,12 @@ async def _call_tool(
     _log_client_capabilities(context)
     headers = context.request.headers if context.request is not None else {}
     result, is_error = await anyio.to_thread.run_sync(
-        _invoke_tool,
-        params.name,
-        params.arguments or {},
-        headers,
+        lambda: _invoke_tool(
+            params.name,
+            params.arguments or {},
+            headers,
+            include_apps=_client_supports_apps(context),
+        )
     )
     text = json.dumps(result, ensure_ascii=True, indent=2, default=str)
     return types.CallToolResult(
