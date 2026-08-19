@@ -222,6 +222,28 @@ def _today_iso() -> str:
     return date.today().isoformat()
 
 
+def _today_iso_in_timezone(reminder_timezone: str | None) -> str:
+    return _utc_now().astimezone(_task_timezone(None, reminder_timezone or "UTC")).date().isoformat()
+
+
+def _resolve_today_iso(access_token: str) -> str:
+    """Resolve "today" in the linked account's own reminder timezone. Falls back to
+    the server's local date if the account's context can't be fetched, so a date
+    default never fails a tool call outright."""
+    try:
+        context = _http_json(
+            "GET",
+            "/api/integrations/health-mcp/context",
+            headers=_authorized_headers(access_token),
+        )
+    except Exception:
+        return _today_iso()
+    reminder_timezone = str(context.get("ReminderTimeZone") or "").strip()
+    if not reminder_timezone:
+        return _today_iso()
+    return _today_iso_in_timezone(reminder_timezone)
+
+
 def _parse_iso_datetime(value: str) -> datetime:
     normalized = value.strip()
     if normalized.endswith("Z"):
@@ -1188,7 +1210,7 @@ def _tool_log_meal_text(arguments: dict[str, Any], headers: Any) -> dict[str, An
     if not text:
         raise ValueError("text is required.")
     payload = {
-        "Date": str(arguments.get("date") or _today_iso()),
+        "Date": str(arguments.get("date") or _resolve_today_iso(access_token)),
         "MealType": arguments.get("meal_type"),
         "Note": arguments.get("note"),
         "Text": text,
@@ -1209,7 +1231,7 @@ def _tool_log_meal_image(arguments: dict[str, Any], headers: Any) -> dict[str, A
     if not image_base64:
         raise ValueError("image_base64 is required.")
     payload = {
-        "Date": str(arguments.get("date") or _today_iso()),
+        "Date": str(arguments.get("date") or _resolve_today_iso(access_token)),
         "MealType": arguments.get("meal_type"),
         "Note": arguments.get("note"),
         "Text": None,
@@ -1232,7 +1254,7 @@ def _tool_log_meal_manual(arguments: dict[str, Any], headers: Any) -> dict[str, 
     if "calories" not in arguments:
         raise ValueError("calories is required.")
     payload = {
-        "Date": str(arguments.get("date") or _today_iso()),
+        "Date": str(arguments.get("date") or _resolve_today_iso(access_token)),
         "MealType": arguments.get("meal_type"),
         "Note": arguments.get("note"),
         "FoodName": food_name,
@@ -1304,7 +1326,7 @@ def _tool_log_weight(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
     if "weight_kg" not in arguments:
         raise ValueError("weight_kg is required.")
     payload = {
-        "Date": str(arguments.get("date") or _today_iso()),
+        "Date": str(arguments.get("date") or _resolve_today_iso(access_token)),
         "WeightKg": float(arguments["weight_kg"]),
     }
     return _http_json(
@@ -1501,7 +1523,7 @@ def _tool_get_medication_doses(arguments: dict[str, Any], headers: Any) -> dict[
 def _tool_update_daily_log(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
     principal = _require_principal(headers)
     access_token, _account = _refresh_access_for_principal(principal)
-    payload = {"Date": str(arguments.get("date") or _today_iso())}
+    payload = {"Date": str(arguments.get("date") or _resolve_today_iso(access_token))}
     field_map = {
         "steps": "Steps",
         "step_kcal_factor_override": "StepKcalFactorOverride",
@@ -1545,7 +1567,7 @@ def _tool_log_workout(arguments: dict[str, Any], headers: Any) -> dict[str, Any]
     if not workout_type or not workout_name:
         raise ValueError("workout_type and workout_name are required.")
     payload = {
-        "Date": str(arguments.get("date") or _today_iso()),
+        "Date": str(arguments.get("date") or _resolve_today_iso(access_token)),
         "WorkoutType": workout_type,
         "WorkoutName": workout_name,
         "DurationMinutes": arguments.get("duration_minutes"),
@@ -1602,7 +1624,7 @@ def _tool_delete_workout(arguments: dict[str, Any], headers: Any) -> dict[str, A
 def _tool_get_today_summary(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
     principal = _require_principal(headers)
     access_token, _account = _refresh_access_for_principal(principal)
-    date_value = str(arguments.get("date") or _today_iso())
+    date_value = str(arguments.get("date") or _resolve_today_iso(access_token))
     path = f"/api/integrations/health-mcp/summary?{urllib.parse.urlencode({'date': date_value})}"
     return _http_json("GET", path, headers=_authorized_headers(access_token))
 
@@ -1615,7 +1637,7 @@ def _tool_get_connection_context(arguments: dict[str, Any], headers: Any) -> dic
     context["external_email"] = principal.get("email")
     context["everday_user_id"] = int(account["everday_user_id"])
     context["everday_username"] = account["everday_username"]
-    context["server_date"] = _today_iso()
+    context["server_date"] = _today_iso_in_timezone(context.get("ReminderTimeZone"))
     context["Server"] = _server_identity()
     return context
 
@@ -1702,7 +1724,7 @@ def _tool_get_meal(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
 def _tool_get_today_meals(arguments: dict[str, Any], headers: Any) -> dict[str, Any]:
     principal = _require_principal(headers)
     access_token, _account = _refresh_access_for_principal(principal)
-    date_value = str(arguments.get("date") or _today_iso())
+    date_value = str(arguments.get("date") or _resolve_today_iso(access_token))
     path = f"/api/integrations/health-mcp/meals/today?{urllib.parse.urlencode({'date': date_value})}"
     return _http_json("GET", path, headers=_authorized_headers(access_token))
 

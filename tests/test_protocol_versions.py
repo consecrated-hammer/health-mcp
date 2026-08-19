@@ -478,6 +478,25 @@ class SDKMigrationTests(unittest.TestCase):
 
         self.assertEqual(result["Server"], health._server_identity())
 
+    def test_resolve_today_iso_uses_the_linked_accounts_timezone_not_the_servers(self) -> None:
+        # UTC 23:00 on Jan 1 is already Jan 2 in a UTC+14 account timezone, and would
+        # stay Jan 1 under most server timezones. A date default must follow the
+        # linked account, not wherever this container happens to run.
+        fixed_now = datetime(2026, 1, 1, 23, 0, tzinfo=timezone.utc)
+        with (
+            patch.object(health, "_utc_now", return_value=fixed_now),
+            patch.object(health, "_http_json", return_value={"ReminderTimeZone": "Pacific/Kiritimati"}),
+        ):
+            result = health._resolve_today_iso("access-token")
+
+        self.assertEqual(result, "2026-01-02")
+
+    def test_resolve_today_iso_falls_back_to_server_date_when_context_call_fails(self) -> None:
+        with patch.object(health, "_http_json", side_effect=RuntimeError("Failed to reach Everday")):
+            result = health._resolve_today_iso("access-token")
+
+        self.assertEqual(result, health._today_iso())
+
     def test_tool_errors_remain_model_visible_call_errors(self) -> None:
         result, is_error = server._invoke_tool("not-a-tool", {}, _headers())
 
